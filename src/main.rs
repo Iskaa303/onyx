@@ -1,49 +1,72 @@
-mod fs;
-mod display;
-mod settings;
-mod ai;
+mod agent;
+mod core;
+mod interface;
 
 use anyhow::Result;
-use clap::Parser;
-use std::path::PathBuf;
 
-#[derive(Parser)]
-#[command(name = "onyx")]
-#[command(about = "Simple CLI tool to organize info using AI", long_about = None)]
-struct Cli {
-    #[arg(value_name = "PATH", help = "Path to the directory to read (defaults to current directory)")]
-    path: Option<PathBuf>,
+use crate::agent::ChatAgent;
+use crate::core::{Config, Message};
+use crate::interface::App;
 
-    #[arg(long, help = "Initialize settings in ~/.onyx")]
-    init: bool,
+#[tokio::main]
+async fn main() -> Result<()> {
+    let config = Config::load()?;
 
-    #[arg(short, long, help = "Ask AI a question")]
-    ask: Option<String>,
-}
+    let mut terminal = ratatui::init();
+    let mut app = App::new();
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let agent = match ChatAgent::new(&config).await {
+        Ok(agent) => Some(agent),
+        Err(e) => {
+            let provider_config = config.get_active_provider();
+            let needs_api_key = provider_config.api_key.is_none()
+                || provider_config.api_key.as_ref().unwrap().is_empty();
 
-    if cli.init {
-        settings::Settings::init()?;
-        println!("Settings initialized in ~/.onyx/settings.toml");
-        return Ok(());
+            if needs_api_key {
+                app.add_message(Message::assistant(format!(
+                    "Welcome to Onyx!\n\n\
+                    No API key found for the active provider.\n\
+                    1. Type /config to see the config file location\n\
+                    2. Edit the file and add your API key\n\
+                    3. Restart the application\n\n\
+                    You can still use commands like /help and /config."
+                )));
+                None
+            } else {
+                ratatui::restore();
+                return Err(e);
+            }
+        }
+    };
+
+    loop {
+        terminal.draw(|frame| {
+            app.draw(frame);
+        })?;
+
+        app.handle_event()?;
+
+        if app.should_quit() {
+            break;
+        }
+
+        if let Some(input) = app.take_input() {
+            if let Some(cmd_response) = app.handle_command(&input) {
+                app.add_message(Message::assistant(cmd_response));
+            } else if let Some(ref agent) = agent {
+                let user_msg = Message::user(input);
+                app.add_message(user_msg.clone());
+
+                let response = agent.send(user_msg).await?;
+                app.add_message(response);
+            } else {
+                app.add_message(Message::assistant(
+                    "Please configure your API key first. Type /config for instructions.".to_string()
+                ));
+            }
+        }
     }
 
-    if let Some(question) = cli.ask {
-        let settings = settings::Settings::load()?;
-        let response = ai::send_message(&settings, &question)?;
-        println!("\n{}", response);
-        return Ok(());
-    }
-
-    let target_path = cli.path.unwrap_or_else(|| {
-        std::env::current_dir().expect("Failed to get current directory")
-    });
-
-    let absolute_path = target_path.canonicalize()?;
-
-    let entries = fs::read_directory(&absolute_path)?;
-    display::show_entries(&entries, &absolute_path);
+    ratatui::restore();
     Ok(())
 }
