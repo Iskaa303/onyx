@@ -3,9 +3,9 @@ members = [
     "onyx-core",
     "onyx-agent",
     "onyx-tui",
-    "onyx-term",
+    "onyx",
 ]
-default-members = ["onyx-term"]
+default-members = ["onyx"]
 resolver = "2"
 
 [workspace.package]

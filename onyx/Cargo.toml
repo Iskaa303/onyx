@@ -1,5 +1,5 @@
 [package]
-name = "onyx-term"
+name = "onyx"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
