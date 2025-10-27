@@ -136,8 +136,18 @@ jobs:
           Categories=Development;
           EOF
 
+          # Create a placeholder icon (SVG)
+          cat << 'EOF' > onyx.svg
+          <svg width="256" height="256" xmlns="http://www.w3.org/2000/svg">
+            <rect width="256" height="256" fill="#2E3440"/>
+            <text x="50%" y="50%" font-size="180" font-family="sans-serif"
+                  fill="#88C0D0" text-anchor="middle" dominant-baseline="central">O</text>
+          </svg>
+          EOF
+
           ./linuxdeploy-x86_64.AppImage \
               --appdir "$APP.AppDir" -d onyx.desktop \
+              -i onyx.svg \
               --output appimage
 
           mv "$APP-$VERSION-$ARCH.AppImage" dist/ 2>/dev/null || true
