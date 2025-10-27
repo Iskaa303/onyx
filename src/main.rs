@@ -23,14 +23,15 @@ async fn main() -> Result<()> {
                 || provider_config.api_key.as_ref().unwrap().is_empty();
 
             if needs_api_key {
-                app.add_message(Message::assistant(format!(
+                app.add_message(Message::assistant(
                     "Welcome to Onyx!\n\n\
                     No API key found for the active provider.\n\
                     1. Type /config to see the config file location\n\
                     2. Edit the file and add your API key\n\
                     3. Restart the application\n\n\
                     You can still use commands like /help and /config."
-                )));
+                        .to_string(),
+                ));
                 None
             } else {
                 ratatui::restore();
@@ -61,7 +62,8 @@ async fn main() -> Result<()> {
                 app.add_message(response);
             } else {
                 app.add_message(Message::assistant(
-                    "Please configure your API key first. Type /config for instructions.".to_string()
+                    "Please configure your API key first. Type /config for instructions."
+                        .to_string(),
                 ));
             }
         }

@@ -11,22 +11,12 @@ pub enum Provider {
     Ollama,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Default, Deserialize)]
 #[serde(default)]
 pub struct ProviderConfig {
     pub api_key: Option<String>,
     pub model: String,
     pub url: Option<String>,
-}
-
-impl Default for ProviderConfig {
-    fn default() -> Self {
-        Self {
-            api_key: None,
-            model: String::new(),
-            url: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,8 +67,7 @@ impl Config {
             return Ok(config);
         }
 
-        let content = fs::read_to_string(&path)
-            .context("Failed to read config file")?;
+        let content = fs::read_to_string(&path).context("Failed to read config file")?;
 
         match serde_json::from_str::<Config>(&content) {
             Ok(config) => Ok(config),
@@ -87,8 +76,7 @@ impl Config {
                 eprintln!("Error: {}", e);
 
                 let backup_path = Self::backup_path()?;
-                fs::copy(&path, &backup_path)
-                    .context("Failed to backup old config")?;
+                fs::copy(&path, &backup_path).context("Failed to backup old config")?;
                 eprintln!("Backed up old config to: {}", backup_path.display());
 
                 let config = Self::default();
@@ -102,15 +90,12 @@ impl Config {
 
     pub fn save(&self) -> Result<()> {
         let dir = Self::config_dir()?;
-        fs::create_dir_all(&dir)
-            .context("Failed to create config directory")?;
+        fs::create_dir_all(&dir).context("Failed to create config directory")?;
 
         let path = Self::config_path()?;
-        let content = serde_json::to_string_pretty(self)
-            .context("Failed to serialize config")?;
+        let content = serde_json::to_string_pretty(self).context("Failed to serialize config")?;
 
-        fs::write(&path, content)
-            .context("Failed to write config file")?;
+        fs::write(&path, content).context("Failed to write config file")?;
 
         Ok(())
     }
@@ -149,8 +134,7 @@ impl Config {
     }
 
     fn config_dir() -> Result<PathBuf> {
-        let home = dirs::home_dir()
-            .context("Failed to determine home directory")?;
+        let home = dirs::home_dir().context("Failed to determine home directory")?;
         Ok(home.join(".onyx"))
     }
 

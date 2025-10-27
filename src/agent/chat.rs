@@ -1,8 +1,8 @@
 use anyhow::Result;
+use rig::agent::Agent;
+use rig::client::CompletionClient;
 use rig::completion::Prompt;
 use rig::providers::{anthropic, ollama, openai};
-use rig::client::CompletionClient;
-use rig::agent::Agent;
 
 use crate::core::{Config, Message, Provider};
 

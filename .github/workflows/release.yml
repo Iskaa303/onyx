@@ -1,0 +1,236 @@
+name: Release
+on:
+  push:
+    tags:
+    - '[0-9]+.[0-9]+'
+    - '[0-9]+.[0-9]+.[0-9]+'
+    branches:
+    - 'patch/ci-release-*'
+  pull_request:
+    paths:
+    - '.github/workflows/release.yml'
+
+env:
+  # Preview mode: Publishes the build output as a CI artifact instead of creating
+  # a release, allowing for manual inspection of the output. This mode is
+  # activated if the CI run was triggered by events other than pushed tags, or
+  # if the repository is a fork.
+  preview: ${{ !startsWith(github.ref, 'refs/tags/') || github.repository != 'Iskaa303/onyx' }}
+
+jobs:
+  dist:
+    name: Dist
+    env:
+      # For some builds, we use cross to test on 32-bit and big-endian
+      # systems.
+      CARGO: cargo
+      # When CARGO is set to CROSS, this is set to `--target matrix.target`.
+      TARGET_FLAGS:
+      # When CARGO is set to CROSS, TARGET_DIR includes matrix.target.
+      TARGET_DIR: ./target
+      # Emit backtraces on panics.
+      RUST_BACKTRACE: 1
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # don't fail other jobs if one fails
+      matrix:
+        build: [x86_64-linux, aarch64-linux, x86_64-macos, x86_64-windows, aarch64-macos]
+        include:
+        - build: x86_64-linux
+          # WARN: When changing this to a newer version, make sure that the GLIBC isnt too new, as this can cause issues
+          # with portablity on older systems that dont follow ubuntus more rapid release cadence.
+          os: ubuntu-22.04
+          rust: stable
+          target: x86_64-unknown-linux-gnu
+          cross: false
+        - build: aarch64-linux
+          # Version should be kept in lockstep with the x86_64 version
+          os: ubuntu-22.04-arm
+          rust: stable
+          target: aarch64-unknown-linux-gnu
+          cross: false
+        - build: x86_64-macos
+          os: macos-latest
+          rust: stable
+          target: x86_64-apple-darwin
+          cross: false
+        - build: x86_64-windows
+          os: windows-latest
+          rust: stable
+          target: x86_64-pc-windows-msvc
+          cross: false
+        - build: aarch64-macos
+          os: macos-latest
+          rust: stable
+          target: aarch64-apple-darwin
+          cross: false
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v5
+
+      - name: Install ${{ matrix.rust }} toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          target: ${{ matrix.target }}
+
+      - name: Show command used for Cargo
+        run: |
+          echo "cargo command is: ${{ env.CARGO }}"
+          echo "target flag is: ${{ env.TARGET_FLAGS }}"
+
+      - name: Run cargo test
+        if: '!matrix.skip_tests'
+        run: ${{ env.CARGO }} test --release --locked --target ${{ matrix.target }} --workspace
+
+      - name: Build release binary
+        run: ${{ env.CARGO }} build --release --locked --target ${{ matrix.target }}
+
+      - name: Build AppImage
+        shell: bash
+        if: matrix.build == 'x86_64-linux'
+        run: |
+          # Required as of 22.x https://github.com/AppImage/AppImageKit/wiki/FUSE
+          sudo add-apt-repository universe
+          sudo apt install libfuse2
+
+          mkdir dist
+
+          name=dev
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            name=${GITHUB_REF:10}
+          fi
+
+          build="${{ matrix.build }}"
+
+          export VERSION="$name"
+          export ARCH=${build%-linux}
+          export APP=onyx
+          export OUTPUT="onyx-$VERSION-$ARCH.AppImage"
+          export UPDATE_INFORMATION="gh-releases-zsync|$GITHUB_REPOSITORY_OWNER|onyx|latest|$APP-*-$ARCH.AppImage.zsync"
+
+          mkdir -p "$APP.AppDir"/usr/bin
+
+          cp "target/${{ matrix.target }}/release/onyx" "$APP.AppDir/usr/bin/onyx"
+
+          cat << 'EOF' > "$APP.AppDir/AppRun"
+          #!/bin/sh
+
+          APPDIR="$(dirname "$(readlink -f "${0}")")"
+          exec "$APPDIR/usr/bin/onyx" "$@"
+          EOF
+          chmod 755 "$APP.AppDir/AppRun"
+
+          curl -Lo linuxdeploy-x86_64.AppImage \
+              https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
+
+          # Create a minimal .desktop file
+          cat << 'EOF' > onyx.desktop
+          [Desktop Entry]
+          Type=Application
+          Name=Onyx
+          Exec=onyx
+          Icon=onyx
+          Categories=Development;
+          EOF
+
+          ./linuxdeploy-x86_64.AppImage \
+              --appdir "$APP.AppDir" -d onyx.desktop \
+              --output appimage
+
+          mv "$APP-$VERSION-$ARCH.AppImage" dist/ 2>/dev/null || true
+          mv "$APP-$VERSION-$ARCH.AppImage.zsync" dist/ 2>/dev/null || true
+
+      - name: Build Deb
+        shell: bash
+        if: matrix.build == 'x86_64-linux'
+        run: |
+          cargo install cargo-deb
+          mkdir -p target/release
+          cp target/${{ matrix.target }}/release/onyx target/release/
+          cargo deb --no-build
+          mkdir -p dist
+          mv target/debian/*.deb dist/
+
+      - name: Build archive
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cp "target/${{ matrix.target }}/release/onyx.exe" "dist/"
+          else
+            cp "target/${{ matrix.target }}/release/onyx" "dist/"
+          fi
+          chmod +x dist/onyx* 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: bins-${{ matrix.build }}
+          path: dist
+
+  publish:
+    name: Publish
+    needs: [dist]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v5
+
+      - name: Build archive
+        shell: bash
+        run: |
+          set -ex
+
+          source="$(pwd)"
+          tag=${GITHUB_REF_NAME//\//}
+
+          cd "$(mktemp -d)"
+          mv $source/bins-* .
+          mkdir dist
+
+          for dir in bins-* ; do
+              platform=${dir#"bins-"}
+              if [[ $platform =~ "windows" ]]; then
+                  exe=".exe"
+              fi
+              pkgname=onyx-$tag-$platform
+              mkdir -p $pkgname
+              cp $source/LICENSE $source/README.md $pkgname
+              mv bins-$platform/onyx$exe $pkgname
+              chmod +x $pkgname/onyx$exe
+
+              if [[ "$platform" = "x86_64-linux" ]]; then
+                  mv bins-$platform/onyx-*.AppImage* dist/ 2>/dev/null || true
+                  mv bins-$platform/*.deb dist/ 2>/dev/null || true
+              fi
+
+              if [ "$exe" = "" ]; then
+                  tar cJf dist/$pkgname.tar.xz $pkgname
+              else
+                  7z a -r dist/$pkgname.zip $pkgname
+              fi
+          done
+
+          tar cJf dist/onyx-$tag-source.tar.xz -C $source .
+          mv dist $source/
+
+      - name: Upload binaries to release
+        uses: svenstaro/upload-release-action@v2
+        if: env.preview == 'false'
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: dist/*
+          file_glob: true
+          tag: ${{ github.ref_name }}
+          overwrite: true
+
+      - name: Upload binaries as artifact
+        uses: actions/upload-artifact@v5
+        if: env.preview == 'true'
+        with:
+          name: release
+          path: dist/*

@@ -1,11 +1,11 @@
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     text::Line,
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
-    Frame,
 };
 
 use crate::core::{Config, Message};
@@ -132,8 +132,10 @@ impl App {
         let chat_width = chunks[0].width.saturating_sub(4) as usize; // Account for borders and scrollbar
 
         if self.show_help {
-            lines.push(Line::from("Commands: /config, /help | Scroll: ↑↓ or PgUp/PgDn | Ctrl+C to quit")
-                .style(Style::default().fg(Color::DarkGray)));
+            lines.push(
+                Line::from("Commands: /config, /help | Scroll: ↑↓ or PgUp/PgDn | Ctrl+C to quit")
+                    .style(Style::default().fg(Color::DarkGray)),
+            );
             lines.push(Line::from(""));
         }
 
@@ -160,15 +162,14 @@ impl App {
         }
 
         let messages_widget = Paragraph::new(lines)
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title("Chat History"))
+            .block(Block::default().borders(Borders::ALL).title("Chat History"))
             .scroll((self.scroll as u16, 0))
             .wrap(ratatui::widgets::Wrap { trim: false });
 
         frame.render_widget(messages_widget, chunks[0]);
 
-        self.scroll_state = self.scroll_state
+        self.scroll_state = self
+            .scroll_state
             .content_length(self.total_lines)
             .position(self.scroll);
 
@@ -176,73 +177,72 @@ impl App {
             .begin_symbol(Some("↑"))
             .end_symbol(Some("↓"));
 
-        frame.render_stateful_widget(
-            scrollbar,
-            chunks[0],
-            &mut self.scroll_state,
-        );
+        frame.render_stateful_widget(scrollbar, chunks[0], &mut self.scroll_state);
 
         let input_widget = Paragraph::new(self.input.as_str())
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title("Input (Enter to send)"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Input (Enter to send)"),
+            )
             .style(Style::default().fg(Color::Yellow));
 
         frame.render_widget(input_widget, chunks[1]);
     }
 
     pub fn handle_event(&mut self) -> Result<bool> {
-        if event::poll(std::time::Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('c')
-                            if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
-                        {
-                            self.should_quit = true;
-                            return Ok(true);
-                        }
-                        KeyCode::Up => {
-                            self.scroll_up();
-                            return Ok(true);
-                        }
-                        KeyCode::Down => {
-                            self.scroll_down(self.max_scroll);
-                            return Ok(true);
-                        }
-                        KeyCode::PageUp => {
-                            self.scroll = self.scroll.saturating_sub(10);
-                            return Ok(true);
-                        }
-                        KeyCode::PageDown => {
-                            self.scroll = self.scroll.saturating_add(10);
-                            return Ok(true);
-                        }
-                        KeyCode::Home => {
-                            self.scroll = 0;
-                            return Ok(true);
-                        }
-                        KeyCode::End => {
-                            self.scroll_to_bottom();
-                            return Ok(true);
-                        }
-                        KeyCode::Char(c) => {
-                            self.input.push(c);
-                            self.show_help = false;
-                            return Ok(true);
-                        }
-                        KeyCode::Backspace => {
-                            self.input.pop();
-                            return Ok(true);
-                        }
-                        KeyCode::Enter => {
-                            self.show_help = false;
-                            self.submit = true;
-                            return Ok(true);
-                        }
-                        _ => {}
-                    }
+        if event::poll(std::time::Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            match key.code {
+                KeyCode::Char('c')
+                    if key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
+                    self.should_quit = true;
+                    return Ok(true);
                 }
+                KeyCode::Up => {
+                    self.scroll_up();
+                    return Ok(true);
+                }
+                KeyCode::Down => {
+                    self.scroll_down(self.max_scroll);
+                    return Ok(true);
+                }
+                KeyCode::PageUp => {
+                    self.scroll = self.scroll.saturating_sub(10);
+                    return Ok(true);
+                }
+                KeyCode::PageDown => {
+                    self.scroll = self.scroll.saturating_add(10);
+                    return Ok(true);
+                }
+                KeyCode::Home => {
+                    self.scroll = 0;
+                    return Ok(true);
+                }
+                KeyCode::End => {
+                    self.scroll_to_bottom();
+                    return Ok(true);
+                }
+                KeyCode::Char(c) => {
+                    self.input.push(c);
+                    self.show_help = false;
+                    return Ok(true);
+                }
+                KeyCode::Backspace => {
+                    self.input.pop();
+                    return Ok(true);
+                }
+                KeyCode::Enter => {
+                    self.show_help = false;
+                    self.submit = true;
+                    return Ok(true);
+                }
+                _ => {}
             }
         }
         Ok(false)
