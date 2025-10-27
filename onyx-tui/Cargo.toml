@@ -1,0 +1,17 @@
+[package]
+name = "onyx-tui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+onyx-core = { workspace = true }
+
+# Terminal UI
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }

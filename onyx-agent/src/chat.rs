@@ -1,10 +1,21 @@
-use anyhow::Result;
 use rig::agent::Agent;
 use rig::client::CompletionClient;
 use rig::completion::Prompt;
 use rig::providers::{anthropic, ollama, openai};
+use thiserror::Error;
 
-use crate::core::{Config, Message, Provider};
+use onyx_core::{Config, Message, Provider};
+
+#[derive(Debug, Error)]
+pub enum AgentError {
+    #[error("Configuration error: {0}")]
+    ConfigError(#[from] onyx_core::ConfigError),
+
+    #[error("Agent error: {0}")]
+    RigError(String),
+}
+
+pub type Result<T> = std::result::Result<T, AgentError>;
 
 pub enum ChatAgent {
     OpenAI(Agent<openai::responses_api::ResponsesCompletionModel>),
@@ -41,9 +52,18 @@ impl ChatAgent {
 
     pub async fn send(&self, message: Message) -> Result<Message> {
         let response = match self {
-            Self::OpenAI(agent) => agent.prompt(&message.content).await?,
-            Self::Anthropic(agent) => agent.prompt(&message.content).await?,
-            Self::Ollama(agent) => agent.prompt(&message.content).await?,
+            Self::OpenAI(agent) => agent
+                .prompt(&message.content)
+                .await
+                .map_err(|e| AgentError::RigError(e.to_string()))?,
+            Self::Anthropic(agent) => agent
+                .prompt(&message.content)
+                .await
+                .map_err(|e| AgentError::RigError(e.to_string()))?,
+            Self::Ollama(agent) => agent
+                .prompt(&message.content)
+                .await
+                .map_err(|e| AgentError::RigError(e.to_string()))?,
         };
         Ok(Message::assistant(response))
     }

@@ -1,4 +1,3 @@
-use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
     Frame,
@@ -7,8 +6,17 @@ use ratatui::{
     text::Line,
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
+use thiserror::Error;
 
-use crate::core::{Config, Message};
+use onyx_core::{Config, Message, Role};
+
+#[derive(Debug, Error)]
+pub enum UiError {
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+}
+
+pub type Result<T> = std::result::Result<T, UiError>;
 
 pub struct App {
     messages: Vec<Message>,
@@ -141,8 +149,8 @@ impl App {
 
         for msg in &self.messages {
             let (prefix, color) = match msg.role {
-                crate::core::Role::User => ("You: ", Color::Green),
-                crate::core::Role::Assistant => ("AI: ", Color::Cyan),
+                Role::User => ("You: ", Color::Green),
+                Role::Assistant => ("AI: ", Color::Cyan),
             };
 
             // Wrap the message content
@@ -168,10 +176,8 @@ impl App {
 
         frame.render_widget(messages_widget, chunks[0]);
 
-        self.scroll_state = self
-            .scroll_state
-            .content_length(self.total_lines)
-            .position(self.scroll);
+        self.scroll_state =
+            self.scroll_state.content_length(self.total_lines).position(self.scroll);
 
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("↑"))
@@ -180,11 +186,7 @@ impl App {
         frame.render_stateful_widget(scrollbar, chunks[0], &mut self.scroll_state);
 
         let input_widget = Paragraph::new(self.input.as_str())
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Input (Enter to send)"),
-            )
+            .block(Block::default().borders(Borders::ALL).title("Input (Enter to send)"))
             .style(Style::default().fg(Color::Yellow));
 
         frame.render_widget(input_widget, chunks[1]);
@@ -193,13 +195,13 @@ impl App {
     pub fn handle_event(&mut self) -> Result<bool> {
         if event::poll(std::time::Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
         {
+            if key.kind != KeyEventKind::Press {
+                return Ok(false);
+            }
             match key.code {
                 KeyCode::Char('c')
-                    if key
-                        .modifiers
-                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                    if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
                 {
                     self.should_quit = true;
                     return Ok(true);
@@ -259,5 +261,11 @@ impl App {
             }
             _ => None,
         }
+    }
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
     }
 }

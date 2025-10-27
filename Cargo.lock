@@ -457,6 +457,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "eyre"
+version = "0.6.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cd915d99f24784cdc19fd37ef22b97e3ff0ae756c7e492e9fbfe897d61e2aec"
+dependencies = [
+ "indenter",
+ "once_cell",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -945,6 +955,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "indenter"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "964de6e86d545b246d84badc0fef527924ace5134f30641c203ef52ba83f58d5"
+
+[[package]]
 name = "indexmap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1196,20 +1212,48 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 
 [[package]]
-name = "onyx"
+name = "onyx-agent"
 version = "0.0.1-alpha.1"
 dependencies = [
- "anyhow",
- "crossterm 0.29.0",
- "dirs",
+ "onyx-core",
  "qdrant-client",
- "ratatui",
  "reqwest",
  "rig-core",
  "rig-qdrant",
+ "thiserror 2.0.17",
+ "tokio",
+]
+
+[[package]]
+name = "onyx-core"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "dirs",
  "serde",
  "serde_json",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "onyx-term"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "eyre",
+ "onyx-agent",
+ "onyx-core",
+ "onyx-tui",
+ "ratatui",
  "tokio",
+]
+
+[[package]]
+name = "onyx-tui"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "crossterm 0.29.0",
+ "onyx-core",
+ "ratatui",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
@@ -1437,7 +1481,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.1",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
@@ -1474,9 +1518,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.1",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1663,38 +1707,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "reqwest-eventsource"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "632c55746dbb44275691640e7b40c907c16a2dc1a5842aa98aaec90da6ec6bde"
-dependencies = [
- "eventsource-stream",
- "futures-core",
- "futures-timer",
- "mime",
- "nom",
- "pin-project-lite",
- "reqwest",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "rig-core"
-version = "0.22.0"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "136b8115983df35be2c9b176c50c8a793886411e7b5ee8767b8c9cfd25e0ea90"
+checksum = "cd6507bcf17a87ca3dcf229c99f806742572b77b7764da0e7a4d8228ab0b223f"
 dependencies = [
  "as-any",
  "async-stream",
  "base64",
  "bytes",
+ "eventsource-stream",
  "futures",
+ "futures-timer",
  "glob",
  "http",
  "mime_guess",
  "ordered-float",
+ "pin-project-lite",
  "reqwest",
- "reqwest-eventsource",
  "schemars",
  "serde",
  "serde_json",
@@ -1707,9 +1737,9 @@ dependencies = [
 
 [[package]]
 name = "rig-qdrant"
-version = "0.1.27"
+version = "0.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffe4ec6eafce765a70be8b63981bc876f1ca1d9b61262e733bc16e74dfd7bd16"
+checksum = "3704eebd52edd7b92a68679a5a8a1128c3042fcc798195b7abf6c443b215a6d4"
 dependencies = [
  "qdrant-client",
  "rig-core",

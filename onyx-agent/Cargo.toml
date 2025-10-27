@@ -1,0 +1,24 @@
+[package]
+name = "onyx-agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+onyx-core = { workspace = true }
+
+# AI frameworks
+rig-core = { workspace = true }
+rig-qdrant = { workspace = true }
+qdrant-client = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+
+# HTTP client
+reqwest = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }

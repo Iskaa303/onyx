@@ -1,20 +1,57 @@
-[package]
-name = "onyx"
+[workspace]
+members = [
+    "onyx-core",
+    "onyx-agent",
+    "onyx-tui",
+    "onyx-term",
+]
+default-members = ["onyx-term"]
+resolver = "2"
+
+[workspace.package]
 version = "0.0.1-alpha.1"
 edition = "2024"
 authors = ["Iskaa303"]
-readme = "README.md"
-license-file = "LICENSE"
+license = "MIT"
+repository = "https://github.com/Iskaa303/onyx"
 
-[dependencies]
+[workspace.dependencies]
+# Workspace crates
+onyx-core = { path = "onyx-core" }
+onyx-agent = { path = "onyx-agent" }
+onyx-tui = { path = "onyx-tui" }
+
+# Async runtime
 tokio = { version = "1.48.0", features = ["full"] }
+
+# Terminal UI
 ratatui = "0.29.0"
 crossterm = "0.29.0"
-rig-core = "0.22.0"
-rig-qdrant = "0.1.27"
+
+# AI frameworks
+rig-core = "0.23.0"
+rig-qdrant = "0.1.28"
 qdrant-client = "1.15.0"
+
+# HTTP client
 reqwest = "0.12.24"
-anyhow = "1.0.100"
+
+# Error handling - prefer thiserror for library errors, eyre for applications
+eyre = "0.6.12"
+thiserror = "2.0.17"
+
+# Serialization
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
+
+# Utilities
 dirs = "6.0.0"
+
+[profile.release]
+lto = "thin"
+
+[profile.opt]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = true

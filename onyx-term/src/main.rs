@@ -1,12 +1,8 @@
-mod agent;
-mod core;
-mod interface;
+use eyre::Result;
 
-use anyhow::Result;
-
-use crate::agent::ChatAgent;
-use crate::core::{Config, Message};
-use crate::interface::App;
+use onyx_agent::ChatAgent;
+use onyx_core::{Config, Message};
+use onyx_tui::App;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -35,7 +31,7 @@ async fn main() -> Result<()> {
                 None
             } else {
                 ratatui::restore();
-                return Err(e);
+                return Err(e.into());
             }
         }
     };

@@ -1,7 +1,24 @@
-use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("Failed to determine home directory")]
+    NoHomeDir,
+
+    #[error("Failed to read config file: {0}")]
+    ReadError(#[from] std::io::Error),
+
+    #[error("Failed to parse config file: {0}")]
+    ParseError(#[from] serde_json::Error),
+
+    #[error("{0} API key not configured. Please edit {1} and add your API key for {0}.")]
+    MissingApiKey(String, String),
+}
+
+pub type Result<T> = std::result::Result<T, ConfigError>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -34,11 +51,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             active_provider: Provider::OpenAI,
-            openai: ProviderConfig {
-                api_key: None,
-                model: "gpt-4".to_string(),
-                url: None,
-            },
+            openai: ProviderConfig { api_key: None, model: "gpt-4".to_string(), url: None },
             anthropic: ProviderConfig {
                 api_key: None,
                 model: "claude-3-5-sonnet-20241022".to_string(),
@@ -67,7 +80,7 @@ impl Config {
             return Ok(config);
         }
 
-        let content = fs::read_to_string(&path).context("Failed to read config file")?;
+        let content = fs::read_to_string(&path)?;
 
         match serde_json::from_str::<Config>(&content) {
             Ok(config) => Ok(config),
@@ -76,7 +89,7 @@ impl Config {
                 eprintln!("Error: {}", e);
 
                 let backup_path = Self::backup_path()?;
-                fs::copy(&path, &backup_path).context("Failed to backup old config")?;
+                fs::copy(&path, &backup_path)?;
                 eprintln!("Backed up old config to: {}", backup_path.display());
 
                 let config = Self::default();
@@ -90,12 +103,12 @@ impl Config {
 
     pub fn save(&self) -> Result<()> {
         let dir = Self::config_dir()?;
-        fs::create_dir_all(&dir).context("Failed to create config directory")?;
+        fs::create_dir_all(&dir)?;
 
         let path = Self::config_path()?;
-        let content = serde_json::to_string_pretty(self).context("Failed to serialize config")?;
+        let content = serde_json::to_string_pretty(self)?;
 
-        fs::write(&path, content).context("Failed to write config file")?;
+        fs::write(&path, content)?;
 
         Ok(())
     }
@@ -121,20 +134,17 @@ impl Config {
         }
 
         if provider.api_key.is_none() || provider.api_key.as_ref().unwrap().is_empty() {
-            anyhow::bail!(
-                "{} API key not configured.\n\
-                Please edit {} and add your API key for {}.",
-                provider_name,
+            return Err(ConfigError::MissingApiKey(
+                provider_name.to_string(),
                 Self::config_path_display(),
-                provider_name
-            );
+            ));
         }
 
         Ok(())
     }
 
     fn config_dir() -> Result<PathBuf> {
-        let home = dirs::home_dir().context("Failed to determine home directory")?;
+        let home = dirs::home_dir().ok_or(ConfigError::NoHomeDir)?;
         Ok(home.join(".onyx"))
     }
 
@@ -144,10 +154,7 @@ impl Config {
 
     fn backup_path() -> Result<PathBuf> {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
         Ok(Self::config_dir()?.join(format!("config.json.backup.{}", timestamp)))
     }
 

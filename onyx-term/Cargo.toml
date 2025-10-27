@@ -1,0 +1,25 @@
+[package]
+name = "onyx-term"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "onyx"
+path = "src/main.rs"
+
+[dependencies]
+onyx-core = { workspace = true }
+onyx-agent = { workspace = true }
+onyx-tui = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Terminal UI
+ratatui = { workspace = true }
+
+# Error handling
+eyre = { workspace = true }
