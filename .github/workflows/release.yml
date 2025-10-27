@@ -145,9 +145,14 @@ jobs:
           </svg>
           EOF
 
+          # Copy icon to AppDir before running linuxdeploy
+          mkdir -p "$APP.AppDir/usr/share/icons/hicolor/scalable/apps"
+          cp onyx.svg "$APP.AppDir/usr/share/icons/hicolor/scalable/apps/onyx.svg"
+
           ./linuxdeploy-x86_64.AppImage \
-              --appdir "$APP.AppDir" -d onyx.desktop \
-              -i onyx.svg \
+              --appdir "$APP.AppDir" \
+              --desktop-file onyx.desktop \
+              --icon-file onyx.svg \
               --output appimage
 
           mv "$APP-$VERSION-$ARCH.AppImage" dist/ 2>/dev/null || true
