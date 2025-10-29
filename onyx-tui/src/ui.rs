@@ -22,6 +22,8 @@ pub type Result<T> = std::result::Result<T, UiError>;
 pub struct App {
     messages: Vec<Message>,
     input: String,
+    cursor_position: usize,
+    selection_start: Option<usize>,
     should_quit: bool,
     show_help: bool,
     submit: bool,
@@ -32,6 +34,17 @@ pub struct App {
     auto_scroll: bool,
     is_processing: bool,
     spinner_state: usize,
+    show_command_menu: bool,
+    command_menu_selected: usize,
+    available_commands: Vec<(&'static str, &'static str)>,
+    undo_history: Vec<(String, usize)>,
+    undo_position: usize,
+    undo_group_timer: std::time::Instant,
+    input_history: Vec<String>,
+    history_position: Option<usize>,
+    temp_input: String,
+    show_history_menu: bool,
+    history_menu_selected: usize,
 }
 
 impl App {
@@ -39,6 +52,8 @@ impl App {
         Self {
             messages: Vec::new(),
             input: String::new(),
+            cursor_position: 0,
+            selection_start: None,
             should_quit: false,
             show_help: true,
             submit: false,
@@ -49,6 +64,21 @@ impl App {
             auto_scroll: true,
             is_processing: false,
             spinner_state: 0,
+            show_command_menu: false,
+            command_menu_selected: 0,
+            available_commands: vec![
+                ("/help", "Show help information"),
+                ("/config", "Show config file location"),
+                ("/now", "Insert current date and time"),
+            ],
+            undo_history: vec![(String::new(), 0)],
+            undo_position: 0,
+            undo_group_timer: std::time::Instant::now(),
+            input_history: Vec::new(),
+            history_position: None,
+            temp_input: String::new(),
+            show_history_menu: false,
+            history_menu_selected: 0,
         }
     }
 
@@ -65,7 +95,26 @@ impl App {
         if self.input.is_empty() {
             return None;
         }
-        Some(std::mem::take(&mut self.input))
+
+        let input = std::mem::take(&mut self.input);
+
+        if !input.trim().is_empty() {
+            self.input_history.push(input.clone());
+            if self.input_history.len() > 100 {
+                self.input_history.remove(0);
+            }
+        }
+
+        self.cursor_position = 0;
+        self.selection_start = None;
+        self.show_command_menu = false;
+        self.command_menu_selected = 0;
+        self.history_position = None;
+        self.temp_input.clear();
+        self.undo_history = vec![(String::new(), 0)];
+        self.undo_position = 0;
+
+        Some(Self::expand_now_command(&input))
     }
 
     pub fn should_quit(&self) -> bool {
@@ -86,6 +135,114 @@ impl App {
         self.auto_scroll = true;
     }
 
+    fn update_command_menu(&mut self) {
+        let input_before_cursor = &self.input[..self.cursor_position];
+
+        if let Some(last_word_start) = input_before_cursor.rfind(|c: char| c.is_whitespace()) {
+            let word = &input_before_cursor[last_word_start + 1..];
+            if word.starts_with('/') {
+                self.show_command_menu = true;
+                return;
+            }
+        } else if input_before_cursor.starts_with('/') {
+            self.show_command_menu = true;
+            return;
+        }
+
+        self.show_command_menu = false;
+        self.command_menu_selected = 0;
+    }
+
+    fn get_filtered_commands(&self) -> Vec<(&'static str, &'static str)> {
+        let input_before_cursor = &self.input[..self.cursor_position];
+
+        let command_prefix =
+            if let Some(last_word_start) = input_before_cursor.rfind(|c: char| c.is_whitespace()) {
+                &input_before_cursor[last_word_start + 1..]
+            } else {
+                input_before_cursor
+            };
+
+        if !command_prefix.starts_with('/') {
+            return Vec::new();
+        }
+
+        self.available_commands
+            .iter()
+            .filter(|(cmd, _)| cmd.starts_with(command_prefix))
+            .copied()
+            .collect()
+    }
+
+    pub fn get_command_menu_state(&self) -> Option<(Vec<(&'static str, &'static str)>, usize)> {
+        if self.show_command_menu {
+            let filtered = self.get_filtered_commands();
+            if !filtered.is_empty() {
+                return Some((filtered, self.command_menu_selected));
+            }
+        }
+        None
+    }
+
+    pub fn get_selection_range(&self) -> Option<(usize, usize)> {
+        if let Some(start) = self.selection_start {
+            let (sel_start, sel_end) = if start < self.cursor_position {
+                (start, self.cursor_position)
+            } else {
+                (self.cursor_position, start)
+            };
+            Some((sel_start, sel_end))
+        } else {
+            None
+        }
+    }
+
+    fn clear_selection(&mut self) {
+        self.selection_start = None;
+    }
+
+    fn save_to_undo(&mut self, force: bool) {
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(self.undo_group_timer);
+        let should_save = force || elapsed.as_millis() > 500;
+
+        if should_save {
+            if self.undo_position < self.undo_history.len() {
+                self.undo_history.truncate(self.undo_position + 1);
+            }
+
+            let state = (self.input.clone(), self.cursor_position);
+            if self.undo_history.last() != Some(&state) {
+                self.undo_history.push(state);
+                self.undo_position = self.undo_history.len() - 1;
+
+                if self.undo_history.len() > 100 {
+                    self.undo_history.remove(0);
+                    self.undo_position = self.undo_position.saturating_sub(1);
+                }
+            }
+
+            self.undo_group_timer = now;
+        }
+    }
+
+    fn undo(&mut self) {
+        if self.undo_position > 0 {
+            self.undo_position -= 1;
+            let (input, cursor) = self.undo_history[self.undo_position].clone();
+            self.input = input;
+            self.cursor_position = cursor;
+            self.clear_selection();
+            self.update_command_menu();
+        }
+    }
+
+    fn expand_now_command(input: &str) -> String {
+        let now = chrono::Local::now();
+        let formatted = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        input.replace("/now", &formatted)
+    }
+
     pub fn draw(&mut self, frame: &mut Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -100,8 +257,57 @@ impl App {
             self.input_focused,
             self.is_processing,
             self.spinner_state,
+            self.cursor_position,
+            self.get_selection_range(),
         );
         input_widget.render(frame, chunks[1]);
+
+        if self.show_history_menu {
+            self.render_history_menu(frame, chunks[1]);
+        } else if let Some((commands, selected)) = self.get_command_menu_state() {
+            self.render_command_menu(frame, chunks[1], &commands, selected);
+        }
+    }
+
+    fn render_history_menu(&self, frame: &mut Frame, input_area: Rect) {
+        use crate::widgets::HistoryMenuWidget;
+
+        let menu_height = (self.input_history.len() as u16).min(10) + 2;
+        let menu_width = 60.min(input_area.width.saturating_sub(4));
+
+        let menu_area = Rect {
+            x: input_area.x + 2,
+            y: input_area.y.saturating_sub(menu_height),
+            width: menu_width,
+            height: menu_height,
+        };
+
+        let menu_widget =
+            HistoryMenuWidget::new(&self.input_history, self.history_menu_selected, &self.theme);
+        menu_widget.render(frame, menu_area);
+    }
+
+    fn render_command_menu(
+        &self,
+        frame: &mut Frame,
+        input_area: Rect,
+        commands: &[(&str, &str)],
+        selected: usize,
+    ) {
+        use crate::widgets::CommandMenuWidget;
+
+        let menu_height = (commands.len() as u16).min(5) + 2;
+        let menu_width = 50.min(input_area.width.saturating_sub(4));
+
+        let menu_area = Rect {
+            x: input_area.x + 2,
+            y: input_area.y.saturating_sub(menu_height),
+            width: menu_width,
+            height: menu_height,
+        };
+
+        let menu_widget = CommandMenuWidget::new(commands, selected, &self.theme);
+        menu_widget.render(frame, menu_area);
     }
 
     fn render_chat_area(&mut self, frame: &mut Frame, area: Rect) {
@@ -156,6 +362,12 @@ impl App {
                 return Ok(false);
             }
             match key.code {
+                KeyCode::Esc => {
+                    if self.show_history_menu {
+                        self.show_history_menu = false;
+                        return Ok(true);
+                    }
+                }
                 KeyCode::Char('c')
                     if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
                 {
@@ -168,11 +380,72 @@ impl App {
                     self.clear_chat();
                     return Ok(true);
                 }
-                KeyCode::Up => {
-                    self.scroll = self.scroll.saturating_sub(1);
-                    self.auto_scroll = false;
+                KeyCode::Char('a')
+                    if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
+                    self.selection_start = Some(0);
+                    self.cursor_position = self.input.len();
+                    return Ok(true);
                 }
-                KeyCode::Down => self.scroll = self.scroll.saturating_add(1),
+                KeyCode::Char('z')
+                    if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
+                    self.undo();
+                    return Ok(true);
+                }
+                KeyCode::Char('d')
+                    if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
+                    if self.input.is_empty() {
+                        self.should_quit = true;
+                    } else {
+                        self.save_to_undo(true);
+                        self.input.clear();
+                        self.cursor_position = 0;
+                        self.clear_selection();
+                        self.update_command_menu();
+                    }
+                    return Ok(true);
+                }
+                KeyCode::Char('h')
+                    if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
+                    if !self.input_history.is_empty() {
+                        self.show_history_menu = !self.show_history_menu;
+                        if self.show_history_menu {
+                            self.history_menu_selected = self.input_history.len().saturating_sub(1);
+                        }
+                    }
+                    return Ok(true);
+                }
+                KeyCode::Up => {
+                    if self.show_history_menu {
+                        self.history_menu_selected = self.history_menu_selected.saturating_sub(1);
+                    } else if self.show_command_menu {
+                        let filtered = self.get_filtered_commands();
+                        if !filtered.is_empty() {
+                            self.command_menu_selected =
+                                self.command_menu_selected.saturating_sub(1);
+                        }
+                    } else {
+                        self.scroll = self.scroll.saturating_sub(1);
+                        self.auto_scroll = false;
+                    }
+                }
+                KeyCode::Down => {
+                    if self.show_history_menu {
+                        if self.history_menu_selected < self.input_history.len().saturating_sub(1) {
+                            self.history_menu_selected += 1;
+                        }
+                    } else if self.show_command_menu {
+                        let filtered = self.get_filtered_commands();
+                        if !filtered.is_empty() && self.command_menu_selected < filtered.len() - 1 {
+                            self.command_menu_selected += 1;
+                        }
+                    } else {
+                        self.scroll = self.scroll.saturating_add(1);
+                    }
+                }
                 KeyCode::PageUp => {
                     self.scroll = self.scroll.saturating_sub(10);
                     self.auto_scroll = false;
@@ -184,15 +457,129 @@ impl App {
                 }
                 KeyCode::End => self.auto_scroll = true,
                 KeyCode::Char(c) => {
-                    self.input.push(c);
+                    if self.show_history_menu {
+                        self.show_history_menu = false;
+                    }
+                    let is_word_boundary = c.is_whitespace() || c.is_ascii_punctuation();
+                    self.save_to_undo(is_word_boundary);
+                    if let Some((start, end)) = self.get_selection_range() {
+                        self.input.replace_range(start..end, &c.to_string());
+                        self.cursor_position = start + 1;
+                        self.clear_selection();
+                    } else {
+                        self.input.insert(self.cursor_position, c);
+                        self.cursor_position += 1;
+                    }
+                    self.update_command_menu();
                     self.show_help = false;
                     return Ok(true);
                 }
                 KeyCode::Backspace => {
-                    self.input.pop();
+                    self.save_to_undo(true);
+                    if let Some((start, end)) = self.get_selection_range() {
+                        self.input.replace_range(start..end, "");
+                        self.cursor_position = start;
+                        self.clear_selection();
+                    } else if self.cursor_position > 0 {
+                        self.cursor_position -= 1;
+                        self.input.remove(self.cursor_position);
+                    }
+                    self.update_command_menu();
                     return Ok(true);
                 }
+                KeyCode::Delete => {
+                    self.save_to_undo(true);
+                    if let Some((start, end)) = self.get_selection_range() {
+                        self.input.replace_range(start..end, "");
+                        self.cursor_position = start;
+                        self.clear_selection();
+                    } else if self.cursor_position < self.input.len() {
+                        self.input.remove(self.cursor_position);
+                    }
+                    self.update_command_menu();
+                }
+                KeyCode::Left => {
+                    if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) {
+                        if self.selection_start.is_none() {
+                            self.selection_start = Some(self.cursor_position);
+                        }
+                        if self.cursor_position > 0 {
+                            self.cursor_position -= 1;
+                        }
+                    } else if self.selection_start.is_some() {
+                        if let Some((start, _)) = self.get_selection_range() {
+                            self.cursor_position = start;
+                        }
+                        self.clear_selection();
+                    } else if self.cursor_position > 0 {
+                        self.cursor_position -= 1;
+                    }
+                    self.update_command_menu();
+                }
+                KeyCode::Right => {
+                    if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) {
+                        if self.selection_start.is_none() {
+                            self.selection_start = Some(self.cursor_position);
+                        }
+                        if self.cursor_position < self.input.len() {
+                            self.cursor_position += 1;
+                        }
+                    } else if self.selection_start.is_some() {
+                        if let Some((_, end)) = self.get_selection_range() {
+                            self.cursor_position = end;
+                        }
+                        self.clear_selection();
+                    } else if self.cursor_position < self.input.len() {
+                        self.cursor_position += 1;
+                    }
+                    self.update_command_menu();
+                }
+                KeyCode::Tab => {
+                    if self.show_history_menu {
+                        if self.history_menu_selected < self.input_history.len() {
+                            self.input = self.input_history[self.history_menu_selected].clone();
+                            self.cursor_position = self.input.len();
+                            self.clear_selection();
+                            self.show_history_menu = false;
+                            self.update_command_menu();
+                        }
+                        return Ok(true);
+                    } else if self.show_command_menu {
+                        let filtered = self.get_filtered_commands();
+                        if !filtered.is_empty() {
+                            self.save_to_undo(true);
+                            let selected_idx = self.command_menu_selected % filtered.len();
+                            let selected_command = filtered[selected_idx].0;
+
+                            let input_before_cursor = &self.input[..self.cursor_position];
+                            let cmd_start = if let Some(pos) =
+                                input_before_cursor.rfind(|c: char| c.is_whitespace())
+                            {
+                                pos + 1
+                            } else {
+                                0
+                            };
+
+                            self.input
+                                .replace_range(cmd_start..self.cursor_position, selected_command);
+                            self.cursor_position = cmd_start + selected_command.len();
+                            self.show_command_menu = false;
+                            self.command_menu_selected = 0;
+                        }
+                        return Ok(true);
+                    }
+                }
                 KeyCode::Enter => {
+                    if self.show_history_menu {
+                        if self.history_menu_selected < self.input_history.len() {
+                            self.input = self.input_history[self.history_menu_selected].clone();
+                            self.cursor_position = self.input.len();
+                            self.clear_selection();
+                            self.show_history_menu = false;
+                            self.update_command_menu();
+                        }
+                        return Ok(true);
+                    }
                     self.show_help = false;
                     self.submit = true;
                     return Ok(true);

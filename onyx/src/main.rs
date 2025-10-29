@@ -56,11 +56,12 @@ async fn main() -> Result<()> {
         }
 
         if let Some(input) = app.take_input() {
+            let user_msg = Message::user(input.clone());
+            app.add_message(user_msg.clone());
+
             if let Some(cmd_response) = app.handle_command(&input) {
                 app.add_message(Message::assistant(cmd_response));
             } else if let Some(ref agent) = agent {
-                let user_msg = Message::user(input);
-                app.add_message(user_msg.clone());
                 app.set_processing(true);
 
                 let agent_arc = Arc::clone(agent);

@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Modifier,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
@@ -56,6 +56,8 @@ pub struct InputWidget<'a> {
     focused: bool,
     is_processing: bool,
     spinner_state: usize,
+    cursor_position: usize,
+    selection_range: Option<(usize, usize)>,
 }
 
 impl<'a> InputWidget<'a> {
@@ -65,13 +67,109 @@ impl<'a> InputWidget<'a> {
         focused: bool,
         is_processing: bool,
         spinner_state: usize,
+        cursor_position: usize,
+        selection_range: Option<(usize, usize)>,
     ) -> Self {
-        Self { input, theme, focused, is_processing, spinner_state }
+        Self {
+            input,
+            theme,
+            focused,
+            is_processing,
+            spinner_state,
+            cursor_position,
+            selection_range,
+        }
     }
 
     fn get_spinner_char(&self) -> &'static str {
         const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         SPINNER_CHARS[self.spinner_state % SPINNER_CHARS.len()]
+    }
+
+    fn render_input_with_cursor(&self, base_style: Style) -> Vec<Span<'static>> {
+        let mut spans = Vec::new();
+        let selection_style = self.theme.input_active.add_modifier(Modifier::REVERSED);
+
+        if let Some((sel_start, sel_end)) = self.selection_range {
+            if sel_start > 0 {
+                let before_sel = &self.input[..sel_start];
+                spans.extend(self.style_input_text(before_sel, base_style));
+            }
+
+            let actual_end = sel_end.min(self.input.len());
+            if sel_start < actual_end {
+                let selected = &self.input[sel_start..actual_end];
+                spans.push(Span::styled(selected.to_string(), selection_style));
+            }
+
+            if actual_end < self.input.len() {
+                let after_sel = &self.input[actual_end..];
+                spans.extend(self.style_input_text(after_sel, base_style));
+            }
+        } else if self.cursor_position >= self.input.len() {
+            spans.extend(self.style_input_text(self.input, base_style));
+            if self.focused {
+                spans.push(Span::styled("█".to_string(), self.theme.input_active));
+            }
+        } else {
+            let before_cursor = &self.input[..self.cursor_position];
+            spans.extend(self.style_input_text(before_cursor, base_style));
+
+            if self.focused {
+                let char_at_cursor = self.input.chars().nth(self.cursor_position).unwrap_or(' ');
+                spans.push(Span::styled(
+                    char_at_cursor.to_string(),
+                    self.theme.input_active.add_modifier(Modifier::REVERSED),
+                ));
+            }
+
+            let after_cursor_start = self.cursor_position
+                + self.input[self.cursor_position..].chars().next().map_or(1, |c| c.len_utf8());
+            if after_cursor_start < self.input.len() {
+                let after_cursor = &self.input[after_cursor_start..];
+                spans.extend(self.style_input_text(after_cursor, base_style));
+            }
+        }
+
+        spans
+    }
+
+    fn style_input_text(&self, text: &str, base_style: Style) -> Vec<Span<'static>> {
+        let mut spans = Vec::new();
+        let mut current = String::new();
+        let chars: Vec<char> = text.chars().collect();
+        let mut i = 0;
+
+        while i < chars.len() {
+            if chars[i] == '/' {
+                if !current.is_empty() {
+                    spans.push(Span::styled(current.clone(), base_style));
+                    current.clear();
+                }
+
+                let mut command = String::from('/');
+                i += 1;
+                while i < chars.len() && !chars[i].is_whitespace() {
+                    command.push(chars[i]);
+                    i += 1;
+                }
+
+                spans.push(Span::styled(command, self.theme.success.add_modifier(Modifier::BOLD)));
+            } else {
+                current.push(chars[i]);
+                i += 1;
+            }
+        }
+
+        if !current.is_empty() {
+            spans.push(Span::styled(current, base_style));
+        }
+
+        if spans.is_empty() && !text.is_empty() {
+            spans.push(Span::styled(text.to_string(), base_style));
+        }
+
+        spans
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect) {
@@ -95,11 +193,11 @@ impl<'a> InputWidget<'a> {
                 Span::styled(" [Enter] ", self.theme.success),
                 Span::styled("send ", self.theme.help_text),
                 Span::styled("• ", self.theme.border),
+                Span::styled("[Ctrl+H] ", self.theme.success),
+                Span::styled("history ", self.theme.help_text),
+                Span::styled("• ", self.theme.border),
                 Span::styled("[Ctrl+L] ", self.theme.success),
                 Span::styled("clear ", self.theme.help_text),
-                Span::styled("• ", self.theme.border),
-                Span::styled("[Ctrl+C] ", self.theme.success),
-                Span::styled("quit ", self.theme.help_text),
                 Span::styled(" │ ", self.theme.border),
                 Span::styled("Tip: ", self.theme.help_text.add_modifier(Modifier::ITALIC)),
                 Span::styled("/", self.theme.success.add_modifier(Modifier::BOLD)),
@@ -120,14 +218,7 @@ impl<'a> InputWidget<'a> {
                 vec![Span::styled("Type your message here...", self.theme.help_text)]
             }
         } else {
-            vec![
-                Span::styled(self.input, style),
-                if self.focused {
-                    Span::styled("█", self.theme.input_active)
-                } else {
-                    Span::styled("", self.theme.help_text)
-                },
-            ]
+            self.render_input_with_cursor(style)
         };
 
         let paragraph =
@@ -176,6 +267,106 @@ impl<'a> HelpWidget<'a> {
             ]),
             Line::from(""),
         ]
+    }
+}
+
+pub struct HistoryMenuWidget<'a> {
+    history: &'a [String],
+    selected: usize,
+    theme: &'a Theme,
+}
+
+impl<'a> HistoryMenuWidget<'a> {
+    pub fn new(history: &'a [String], selected: usize, theme: &'a Theme) -> Self {
+        Self { history, selected, theme }
+    }
+
+    pub fn render(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(self.theme.border_focused)
+            .title(Span::styled(" Input History ", self.theme.title));
+
+        let inner_area = block.inner(area);
+        frame.render_widget(block, area);
+
+        let start_idx = if self.history.len() > inner_area.height as usize {
+            self.selected.saturating_sub(inner_area.height as usize / 2)
+        } else {
+            0
+        };
+
+        let mut lines = Vec::new();
+        for (idx, item) in
+            self.history.iter().enumerate().skip(start_idx).take(inner_area.height as usize)
+        {
+            let truncated = if item.len() > (inner_area.width as usize).saturating_sub(6) {
+                format!("{}...", &item[..inner_area.width as usize - 9])
+            } else {
+                item.clone()
+            };
+
+            let line = if idx == self.selected {
+                Line::from(vec![
+                    Span::styled(" ▶ ", self.theme.success.add_modifier(Modifier::BOLD)),
+                    Span::styled(truncated, self.theme.input_active.add_modifier(Modifier::BOLD)),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled("   ", self.theme.help_text),
+                    Span::styled(truncated, self.theme.help_text),
+                ])
+            };
+            lines.push(line);
+        }
+
+        let paragraph = Paragraph::new(lines);
+        frame.render_widget(paragraph, inner_area);
+    }
+}
+
+pub struct CommandMenuWidget<'a> {
+    commands: &'a [(&'a str, &'a str)],
+    selected: usize,
+    theme: &'a Theme,
+}
+
+impl<'a> CommandMenuWidget<'a> {
+    pub fn new(commands: &'a [(&'a str, &'a str)], selected: usize, theme: &'a Theme) -> Self {
+        Self { commands, selected, theme }
+    }
+
+    pub fn render(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(self.theme.border_focused)
+            .title(Span::styled(" Commands ", self.theme.title));
+
+        let inner_area = block.inner(area);
+        frame.render_widget(block, area);
+
+        let mut lines = Vec::new();
+        for (idx, (cmd, desc)) in self.commands.iter().enumerate() {
+            let line = if idx == self.selected {
+                Line::from(vec![
+                    Span::styled(" ▶ ", self.theme.success.add_modifier(Modifier::BOLD)),
+                    Span::styled(*cmd, self.theme.success.add_modifier(Modifier::BOLD)),
+                    Span::styled(" - ", self.theme.help_text),
+                    Span::styled(*desc, self.theme.help_text.add_modifier(Modifier::ITALIC)),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled("   ", self.theme.help_text),
+                    Span::styled(*cmd, self.theme.success),
+                    Span::styled(" - ", self.theme.help_text),
+                    Span::styled(*desc, self.theme.help_text),
+                ])
+            };
+            lines.push(line);
+        }
+
+        let paragraph = Paragraph::new(lines);
+        frame.render_widget(paragraph, inner_area);
     }
 }
 
