@@ -54,11 +54,24 @@ pub struct InputWidget<'a> {
     input: &'a str,
     theme: &'a Theme,
     focused: bool,
+    is_processing: bool,
+    spinner_state: usize,
 }
 
 impl<'a> InputWidget<'a> {
-    pub fn new(input: &'a str, theme: &'a Theme, focused: bool) -> Self {
-        Self { input, theme, focused }
+    pub fn new(
+        input: &'a str,
+        theme: &'a Theme,
+        focused: bool,
+        is_processing: bool,
+        spinner_state: usize,
+    ) -> Self {
+        Self { input, theme, focused, is_processing, spinner_state }
+    }
+
+    fn get_spinner_char(&self) -> &'static str {
+        const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        SPINNER_CHARS[self.spinner_state % SPINNER_CHARS.len()]
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect) {
@@ -66,20 +79,59 @@ impl<'a> InputWidget<'a> {
 
         let border_style = if self.focused { self.theme.border_focused } else { self.theme.border };
 
+        let title = Line::from(Span::styled(" Input ", self.theme.title));
+
+        let bottom_title = if self.is_processing {
+            Line::from(vec![
+                Span::styled(" ", self.theme.help_text),
+                Span::styled(
+                    self.get_spinner_char(),
+                    self.theme.success.add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" Processing... ", self.theme.help_text),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled(" [Enter] ", self.theme.success),
+                Span::styled("send ", self.theme.help_text),
+                Span::styled("• ", self.theme.border),
+                Span::styled("[Ctrl+L] ", self.theme.success),
+                Span::styled("clear ", self.theme.help_text),
+                Span::styled("• ", self.theme.border),
+                Span::styled("[Ctrl+C] ", self.theme.success),
+                Span::styled("quit ", self.theme.help_text),
+                Span::styled(" │ ", self.theme.border),
+                Span::styled("Tip: ", self.theme.help_text.add_modifier(Modifier::ITALIC)),
+                Span::styled("/", self.theme.success.add_modifier(Modifier::BOLD)),
+                Span::styled(" for commands", self.theme.help_text.add_modifier(Modifier::ITALIC)),
+            ])
+        };
+
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(border_style)
-            .title(Span::styled(" Input ", self.theme.title))
-            .title_bottom(Span::styled(" Enter to send • Ctrl+C to quit ", self.theme.help_text));
+            .title(title)
+            .title_bottom(bottom_title);
 
-        let input_display = if self.input.is_empty() && !self.focused {
-            Span::styled("Type your message...", self.theme.help_text)
+        let input_with_cursor = if self.input.is_empty() {
+            if self.focused {
+                vec![Span::styled("█", self.theme.input_active)]
+            } else {
+                vec![Span::styled("Type your message here...", self.theme.help_text)]
+            }
         } else {
-            Span::styled(self.input, style)
+            vec![
+                Span::styled(self.input, style),
+                if self.focused {
+                    Span::styled("█", self.theme.input_active)
+                } else {
+                    Span::styled("", self.theme.help_text)
+                },
+            ]
         };
 
         let paragraph =
-            Paragraph::new(Line::from(input_display)).block(block).wrap(Wrap { trim: false });
+            Paragraph::new(Line::from(input_with_cursor)).block(block).wrap(Wrap { trim: false });
 
         frame.render_widget(paragraph, area);
     }
@@ -96,20 +148,31 @@ impl<'a> HelpWidget<'a> {
 
     pub fn render(&self) -> Vec<Line<'a>> {
         vec![
+            Line::from(vec![Span::styled(
+                "Welcome to Onyx! ",
+                self.theme.title.add_modifier(Modifier::BOLD),
+            )]),
+            Line::from(""),
             Line::from(vec![
-                Span::styled("Commands: ", self.theme.help_text.add_modifier(Modifier::BOLD)),
-                Span::styled("/config ", self.theme.success),
-                Span::styled("• ", self.theme.help_text),
-                Span::styled("/help ", self.theme.success),
+                Span::styled("Quick start: ", self.theme.help_text.add_modifier(Modifier::BOLD)),
+                Span::styled("Type your message and press ", self.theme.help_text),
+                Span::styled("[Enter]", self.theme.success),
+                Span::styled(" to send", self.theme.help_text),
             ]),
             Line::from(vec![
-                Span::styled("Scroll: ", self.theme.help_text.add_modifier(Modifier::BOLD)),
-                Span::styled("↑↓ ", self.theme.success),
-                Span::styled("or ", self.theme.help_text),
-                Span::styled("PgUp/PgDn ", self.theme.success),
-                Span::styled("• ", self.theme.help_text),
-                Span::styled("Home/End ", self.theme.success),
-                Span::styled("to jump", self.theme.help_text),
+                Span::styled("Commands: ", self.theme.help_text.add_modifier(Modifier::BOLD)),
+                Span::styled("/config", self.theme.success),
+                Span::styled(" • ", self.theme.help_text),
+                Span::styled("/help", self.theme.success),
+            ]),
+            Line::from(vec![
+                Span::styled("Navigation: ", self.theme.help_text.add_modifier(Modifier::BOLD)),
+                Span::styled("↑↓", self.theme.success),
+                Span::styled(" scroll • ", self.theme.help_text),
+                Span::styled("PgUp/PgDn", self.theme.success),
+                Span::styled(" page • ", self.theme.help_text),
+                Span::styled("Home/End", self.theme.success),
+                Span::styled(" jump", self.theme.help_text),
             ]),
             Line::from(""),
         ]

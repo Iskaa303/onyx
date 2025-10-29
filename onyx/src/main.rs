@@ -1,8 +1,14 @@
 use eyre::Result;
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
 use onyx_agent::ChatAgent;
 use onyx_core::{Config, Message};
 use onyx_tui::App;
+
+enum AppEvent {
+    Response(Message),
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -12,7 +18,7 @@ async fn main() -> Result<()> {
     let mut app = App::new();
 
     let agent = match ChatAgent::new(&config).await {
-        Ok(agent) => Some(agent),
+        Ok(agent) => Some(Arc::new(agent)),
         Err(e) => {
             let provider_config = config.get_active_provider();
             let needs_api_key = provider_config.api_key.is_none()
@@ -36,6 +42,8 @@ async fn main() -> Result<()> {
         }
     };
 
+    let (tx, mut rx) = mpsc::unbounded_channel();
+
     loop {
         terminal.draw(|frame| {
             app.draw(frame);
@@ -53,15 +61,34 @@ async fn main() -> Result<()> {
             } else if let Some(ref agent) = agent {
                 let user_msg = Message::user(input);
                 app.add_message(user_msg.clone());
+                app.set_processing(true);
 
-                let response = agent.send(user_msg).await?;
-                app.add_message(response);
+                let agent_arc = Arc::clone(agent);
+                let tx_clone = tx.clone();
+                tokio::spawn(async move {
+                    match agent_arc.send(user_msg).await {
+                        Ok(response) => {
+                            let _ = tx_clone.send(AppEvent::Response(response));
+                        }
+                        Err(e) => {
+                            let _ = tx_clone.send(AppEvent::Response(Message::assistant(format!(
+                                "Error: {}",
+                                e
+                            ))));
+                        }
+                    }
+                });
             } else {
                 app.add_message(Message::assistant(
                     "Please configure your API key first. Type /config for instructions."
                         .to_string(),
                 ));
             }
+        }
+
+        while let Ok(AppEvent::Response(msg)) = rx.try_recv() {
+            app.add_message(msg);
+            app.set_processing(false);
         }
     }
 

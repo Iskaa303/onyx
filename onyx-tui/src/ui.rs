@@ -30,6 +30,8 @@ pub struct App {
     theme: Theme,
     input_focused: bool,
     auto_scroll: bool,
+    is_processing: bool,
+    spinner_state: usize,
 }
 
 impl App {
@@ -45,6 +47,8 @@ impl App {
             theme: Theme::default(),
             input_focused: true,
             auto_scroll: true,
+            is_processing: false,
+            spinner_state: 0,
         }
     }
 
@@ -68,6 +72,20 @@ impl App {
         self.should_quit
     }
 
+    pub fn set_processing(&mut self, processing: bool) {
+        self.is_processing = processing;
+    }
+
+    pub fn tick_spinner(&mut self) {
+        self.spinner_state = self.spinner_state.wrapping_add(1);
+    }
+
+    pub fn clear_chat(&mut self) {
+        self.messages.clear();
+        self.scroll = 0;
+        self.auto_scroll = true;
+    }
+
     pub fn draw(&mut self, frame: &mut Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -76,7 +94,13 @@ impl App {
 
         self.render_chat_area(frame, chunks[0]);
 
-        let input_widget = InputWidget::new(&self.input, &self.theme, self.input_focused);
+        let input_widget = InputWidget::new(
+            &self.input,
+            &self.theme,
+            self.input_focused,
+            self.is_processing,
+            self.spinner_state,
+        );
         input_widget.render(frame, chunks[1]);
     }
 
@@ -138,6 +162,12 @@ impl App {
                     self.should_quit = true;
                     return Ok(true);
                 }
+                KeyCode::Char('l')
+                    if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
+                    self.clear_chat();
+                    return Ok(true);
+                }
                 KeyCode::Up => {
                     self.scroll = self.scroll.saturating_sub(1);
                     self.auto_scroll = false;
@@ -170,6 +200,8 @@ impl App {
                 _ => {}
             }
         }
+
+        self.tick_spinner();
         Ok(false)
     }
 
@@ -189,7 +221,9 @@ impl App {
                     Navigation:\n  \
                     ↑/↓ - Scroll up/down\n  \
                     PgUp/PgDn - Scroll page up/down\n  \
-                    Home/End - Jump to top/bottom\n  \
+                    Home/End - Jump to top/bottom\n\n\
+                    Actions:\n  \
+                    Ctrl+L - Clear chat\n  \
                     Ctrl+C - Quit"
                     .to_string(),
             ),
