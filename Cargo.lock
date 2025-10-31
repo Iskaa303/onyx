@@ -1286,6 +1286,7 @@ dependencies = [
 name = "onyx-core"
 version = "0.0.1-alpha.1"
 dependencies = [
+ "chrono",
  "dirs",
  "serde",
  "serde_json",

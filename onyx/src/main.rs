@@ -15,7 +15,7 @@ async fn main() -> Result<()> {
     let config = Config::load()?;
 
     let mut terminal = ratatui::init();
-    let mut app = App::new();
+    let mut app = App::new(config.clone());
 
     let agent = match ChatAgent::new(&config).await {
         Ok(agent) => Some(Arc::new(agent)),

@@ -40,15 +40,11 @@ pub struct App {
     undo_history: Vec<(String, usize)>,
     undo_position: usize,
     undo_group_timer: std::time::Instant,
-    input_history: Vec<String>,
-    history_position: Option<usize>,
-    temp_input: String,
-    show_history_menu: bool,
-    history_menu_selected: usize,
+    config: Config,
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(config: Config) -> Self {
         Self {
             messages: Vec::new(),
             input: String::new(),
@@ -70,15 +66,12 @@ impl App {
                 ("/help", "Show help information"),
                 ("/config", "Show config file location"),
                 ("/now", "Insert current date and time"),
+                ("/save", "Save conversation to log file"),
             ],
             undo_history: vec![(String::new(), 0)],
             undo_position: 0,
             undo_group_timer: std::time::Instant::now(),
-            input_history: Vec::new(),
-            history_position: None,
-            temp_input: String::new(),
-            show_history_menu: false,
-            history_menu_selected: 0,
+            config,
         }
     }
 
@@ -98,19 +91,10 @@ impl App {
 
         let input = std::mem::take(&mut self.input);
 
-        if !input.trim().is_empty() {
-            self.input_history.push(input.clone());
-            if self.input_history.len() > 100 {
-                self.input_history.remove(0);
-            }
-        }
-
         self.cursor_position = 0;
         self.selection_start = None;
         self.show_command_menu = false;
         self.command_menu_selected = 0;
-        self.history_position = None;
-        self.temp_input.clear();
         self.undo_history = vec![(String::new(), 0)];
         self.undo_position = 0;
 
@@ -133,6 +117,36 @@ impl App {
         self.messages.clear();
         self.scroll = 0;
         self.auto_scroll = true;
+    }
+
+    pub fn save_conversation_log(&self) -> Result<String> {
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+
+        let filename = format!("onyx-conversation-{}.log", timestamp);
+
+        let mut log_content = String::new();
+        log_content.push_str("Onyx Conversation Log\n");
+        log_content
+            .push_str(&format!("Generated: {}\n", self.config.format_timestamp(SystemTime::now())));
+        log_content.push_str(&format!("{}\n\n", "=".repeat(80)));
+
+        for msg in &self.messages {
+            let role = match msg.role {
+                onyx_core::Role::User => "USER",
+                onyx_core::Role::Assistant => "ASSISTANT",
+            };
+            let timestamp = self.config.format_timestamp(msg.timestamp);
+            log_content.push_str(&format!("[{}] {} at {}\n", role, role, timestamp));
+            log_content.push_str(&format!("{}\n", "-".repeat(80)));
+            log_content.push_str(&msg.content);
+            log_content.push_str(&format!("\n\n{}\n\n", "=".repeat(80)));
+        }
+
+        fs::write(&filename, log_content)?;
+        Ok(filename)
     }
 
     fn update_command_menu(&mut self) {
@@ -262,29 +276,9 @@ impl App {
         );
         input_widget.render(frame, chunks[1]);
 
-        if self.show_history_menu {
-            self.render_history_menu(frame, chunks[1]);
-        } else if let Some((commands, selected)) = self.get_command_menu_state() {
+        if let Some((commands, selected)) = self.get_command_menu_state() {
             self.render_command_menu(frame, chunks[1], &commands, selected);
         }
-    }
-
-    fn render_history_menu(&self, frame: &mut Frame, input_area: Rect) {
-        use crate::widgets::HistoryMenuWidget;
-
-        let menu_height = (self.input_history.len() as u16).min(10) + 2;
-        let menu_width = 60.min(input_area.width.saturating_sub(4));
-
-        let menu_area = Rect {
-            x: input_area.x + 2,
-            y: input_area.y.saturating_sub(menu_height),
-            width: menu_width,
-            height: menu_height,
-        };
-
-        let menu_widget =
-            HistoryMenuWidget::new(&self.input_history, self.history_menu_selected, &self.theme);
-        menu_widget.render(frame, menu_area);
     }
 
     fn render_command_menu(
@@ -327,7 +321,7 @@ impl App {
         }
 
         for msg in &self.messages {
-            let message_widget = MessageWidget::new(msg, &self.theme, chat_width);
+            let message_widget = MessageWidget::new(msg, &self.theme, chat_width, &self.config.timestamp_format);
             lines.extend(message_widget.render());
             lines.push(Line::from(""));
         }
@@ -362,12 +356,6 @@ impl App {
                 return Ok(false);
             }
             match key.code {
-                KeyCode::Esc => {
-                    if self.show_history_menu {
-                        self.show_history_menu = false;
-                        return Ok(true);
-                    }
-                }
                 KeyCode::Char('c')
                     if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
                 {
@@ -407,21 +395,8 @@ impl App {
                     }
                     return Ok(true);
                 }
-                KeyCode::Char('h')
-                    if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
-                {
-                    if !self.input_history.is_empty() {
-                        self.show_history_menu = !self.show_history_menu;
-                        if self.show_history_menu {
-                            self.history_menu_selected = self.input_history.len().saturating_sub(1);
-                        }
-                    }
-                    return Ok(true);
-                }
                 KeyCode::Up => {
-                    if self.show_history_menu {
-                        self.history_menu_selected = self.history_menu_selected.saturating_sub(1);
-                    } else if self.show_command_menu {
+                    if self.show_command_menu {
                         let filtered = self.get_filtered_commands();
                         if !filtered.is_empty() {
                             self.command_menu_selected =
@@ -433,33 +408,30 @@ impl App {
                     }
                 }
                 KeyCode::Down => {
-                    if self.show_history_menu {
-                        if self.history_menu_selected < self.input_history.len().saturating_sub(1) {
-                            self.history_menu_selected += 1;
-                        }
-                    } else if self.show_command_menu {
+                    if self.show_command_menu {
                         let filtered = self.get_filtered_commands();
                         if !filtered.is_empty() && self.command_menu_selected < filtered.len() - 1 {
                             self.command_menu_selected += 1;
                         }
                     } else {
                         self.scroll = self.scroll.saturating_add(1);
+                        self.auto_scroll = false;
                     }
                 }
                 KeyCode::PageUp => {
                     self.scroll = self.scroll.saturating_sub(10);
                     self.auto_scroll = false;
                 }
-                KeyCode::PageDown => self.scroll = self.scroll.saturating_add(10),
+                KeyCode::PageDown => {
+                    self.scroll = self.scroll.saturating_add(10);
+                    self.auto_scroll = false;
+                }
                 KeyCode::Home => {
                     self.scroll = 0;
                     self.auto_scroll = false;
                 }
                 KeyCode::End => self.auto_scroll = true,
                 KeyCode::Char(c) => {
-                    if self.show_history_menu {
-                        self.show_history_menu = false;
-                    }
                     let is_word_boundary = c.is_whitespace() || c.is_ascii_punctuation();
                     self.save_to_undo(is_word_boundary);
                     if let Some((start, end)) = self.get_selection_range() {
@@ -535,16 +507,7 @@ impl App {
                     self.update_command_menu();
                 }
                 KeyCode::Tab => {
-                    if self.show_history_menu {
-                        if self.history_menu_selected < self.input_history.len() {
-                            self.input = self.input_history[self.history_menu_selected].clone();
-                            self.cursor_position = self.input.len();
-                            self.clear_selection();
-                            self.show_history_menu = false;
-                            self.update_command_menu();
-                        }
-                        return Ok(true);
-                    } else if self.show_command_menu {
+                    if self.show_command_menu {
                         let filtered = self.get_filtered_commands();
                         if !filtered.is_empty() {
                             self.save_to_undo(true);
@@ -570,16 +533,6 @@ impl App {
                     }
                 }
                 KeyCode::Enter => {
-                    if self.show_history_menu {
-                        if self.history_menu_selected < self.input_history.len() {
-                            self.input = self.input_history[self.history_menu_selected].clone();
-                            self.cursor_position = self.input.len();
-                            self.clear_selection();
-                            self.show_history_menu = false;
-                            self.update_command_menu();
-                        }
-                        return Ok(true);
-                    }
                     self.show_help = false;
                     self.submit = true;
                     return Ok(true);
@@ -601,9 +554,14 @@ impl App {
                     path
                 ))
             }
+            "/save" => match self.save_conversation_log() {
+                Ok(filename) => Some(format!("Conversation saved to: {}", filename)),
+                Err(e) => Some(format!("Failed to save conversation: {}", e)),
+            },
             "/help" => Some(
                 "Commands:\n  \
                     /config - Show config file path\n  \
+                    /save - Save conversation to log file\n  \
                     /help - Show this help\n\n\
                     Navigation:\n  \
                     ↑/↓ - Scroll up/down\n  \
@@ -621,6 +579,6 @@ impl App {
 
 impl Default for App {
     fn default() -> Self {
-        Self::new()
+        Self::new(Config::default())
     }
 }

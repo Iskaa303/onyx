@@ -45,6 +45,7 @@ pub struct Config {
     pub ollama: ProviderConfig,
     pub qdrant_url: String,
     pub qdrant_api_key: Option<String>,
+    pub timestamp_format: String,
 }
 
 impl Default for Config {
@@ -64,6 +65,7 @@ impl Default for Config {
             },
             qdrant_url: "http://localhost:6334".to_string(),
             qdrant_api_key: None,
+            timestamp_format: "%Y-%m-%d %H:%M:%S".to_string(),
         }
     }
 }
@@ -162,5 +164,11 @@ impl Config {
         Self::config_path()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "~/.onyx/config.json".to_string())
+    }
+
+    pub fn format_timestamp(&self, timestamp: std::time::SystemTime) -> String {
+        use chrono::{DateTime, Utc};
+        let datetime: DateTime<Utc> = timestamp.into();
+        datetime.format(&self.timestamp_format).to_string()
     }
 }

@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
+use std::time::SystemTime;
 
 use crate::theme::Theme;
 use onyx_core::{Message, Role};
@@ -13,11 +14,12 @@ pub struct MessageWidget<'a> {
     message: &'a Message,
     theme: &'a Theme,
     width: usize,
+    timestamp_format: &'a str,
 }
 
 impl<'a> MessageWidget<'a> {
-    pub fn new(message: &'a Message, theme: &'a Theme, width: usize) -> Self {
-        Self { message, theme, width }
+    pub fn new(message: &'a Message, theme: &'a Theme, width: usize, timestamp_format: &'a str) -> Self {
+        Self { message, theme, width, timestamp_format }
     }
 
     pub fn render(&self) -> Vec<Line<'a>> {
@@ -28,9 +30,12 @@ impl<'a> MessageWidget<'a> {
 
         let mut lines = Vec::new();
 
+        let timestamp = self.format_timestamp(self.message.timestamp);
         lines.push(Line::from(vec![
             Span::styled("┌─ ", self.theme.border),
             Span::styled(prefix, style),
+            Span::styled(" ", self.theme.border),
+            Span::styled(timestamp, self.theme.help_text),
             Span::styled(" ─", self.theme.border),
         ]));
 
@@ -47,6 +52,12 @@ impl<'a> MessageWidget<'a> {
         lines.push(Line::from(Span::styled("└─", self.theme.border)));
 
         lines
+    }
+
+    fn format_timestamp(&self, timestamp: SystemTime) -> String {
+        use chrono::{DateTime, Utc};
+        let datetime: DateTime<Utc> = timestamp.into();
+        datetime.format(self.timestamp_format).to_string()
     }
 }
 
@@ -270,61 +281,6 @@ impl<'a> HelpWidget<'a> {
     }
 }
 
-pub struct HistoryMenuWidget<'a> {
-    history: &'a [String],
-    selected: usize,
-    theme: &'a Theme,
-}
-
-impl<'a> HistoryMenuWidget<'a> {
-    pub fn new(history: &'a [String], selected: usize, theme: &'a Theme) -> Self {
-        Self { history, selected, theme }
-    }
-
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(self.theme.border_focused)
-            .title(Span::styled(" Input History ", self.theme.title));
-
-        let inner_area = block.inner(area);
-        frame.render_widget(block, area);
-
-        let start_idx = if self.history.len() > inner_area.height as usize {
-            self.selected.saturating_sub(inner_area.height as usize / 2)
-        } else {
-            0
-        };
-
-        let mut lines = Vec::new();
-        for (idx, item) in
-            self.history.iter().enumerate().skip(start_idx).take(inner_area.height as usize)
-        {
-            let truncated = if item.len() > (inner_area.width as usize).saturating_sub(6) {
-                format!("{}...", &item[..inner_area.width as usize - 9])
-            } else {
-                item.clone()
-            };
-
-            let line = if idx == self.selected {
-                Line::from(vec![
-                    Span::styled(" ▶ ", self.theme.success.add_modifier(Modifier::BOLD)),
-                    Span::styled(truncated, self.theme.input_active.add_modifier(Modifier::BOLD)),
-                ])
-            } else {
-                Line::from(vec![
-                    Span::styled("   ", self.theme.help_text),
-                    Span::styled(truncated, self.theme.help_text),
-                ])
-            };
-            lines.push(line);
-        }
-
-        let paragraph = Paragraph::new(lines);
-        frame.render_widget(paragraph, inner_area);
-    }
-}
-
 pub struct CommandMenuWidget<'a> {
     commands: &'a [(&'a str, &'a str)],
     selected: usize,
@@ -375,47 +331,55 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
         return vec![text.to_string()];
     }
 
-    let mut lines = Vec::new();
-    let mut current_line = String::new();
-    let mut current_width = 0;
+    let mut result = Vec::new();
 
-    for word in text.split_whitespace() {
-        let word_len = word.len();
+    for paragraph in text.split('\n') {
+        if paragraph.is_empty() {
+            result.push(String::new());
+            continue;
+        }
 
-        if current_width + word_len + 1 > width && !current_line.is_empty() {
-            lines.push(current_line.clone());
-            current_line.clear();
-            current_width = 0;
+        let mut current_line = String::new();
+        let mut current_width = 0;
+
+        for word in paragraph.split_whitespace() {
+            let word_len = word.len();
+
+            if current_width + word_len + 1 > width && !current_line.is_empty() {
+                result.push(current_line.clone());
+                current_line.clear();
+                current_width = 0;
+            }
+
+            if !current_line.is_empty() {
+                current_line.push(' ');
+                current_width += 1;
+            }
+
+            if word_len > width {
+                for chunk in word.as_bytes().chunks(width) {
+                    let chunk_str = std::str::from_utf8(chunk).unwrap_or("");
+                    if !current_line.is_empty() {
+                        result.push(current_line.clone());
+                        current_line.clear();
+                        current_width = 0;
+                    }
+                    result.push(chunk_str.to_string());
+                }
+            } else {
+                current_line.push_str(word);
+                current_width += word_len;
+            }
         }
 
         if !current_line.is_empty() {
-            current_line.push(' ');
-            current_width += 1;
-        }
-
-        if word_len > width {
-            for chunk in word.as_bytes().chunks(width) {
-                let chunk_str = std::str::from_utf8(chunk).unwrap_or("");
-                if !current_line.is_empty() {
-                    lines.push(current_line.clone());
-                    current_line.clear();
-                    current_width = 0;
-                }
-                lines.push(chunk_str.to_string());
-            }
-        } else {
-            current_line.push_str(word);
-            current_width += word_len;
+            result.push(current_line);
         }
     }
 
-    if !current_line.is_empty() {
-        lines.push(current_line);
+    if result.is_empty() {
+        result.push(String::new());
     }
 
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-
-    lines
+    result
 }
