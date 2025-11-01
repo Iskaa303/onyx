@@ -18,7 +18,12 @@ pub struct MessageWidget<'a> {
 }
 
 impl<'a> MessageWidget<'a> {
-    pub fn new(message: &'a Message, theme: &'a Theme, width: usize, timestamp_format: &'a str) -> Self {
+    pub fn new(
+        message: &'a Message,
+        theme: &'a Theme,
+        width: usize,
+        timestamp_format: &'a str,
+    ) -> Self {
         Self { message, theme, width, timestamp_format }
     }
 

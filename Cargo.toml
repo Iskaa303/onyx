@@ -29,8 +29,8 @@ ratatui = "0.29.0"
 crossterm = "0.29.0"
 
 # AI frameworks
-rig-core = "0.23.0"
-rig-qdrant = "0.1.28"
+rig-core = "0.23.1"
+rig-qdrant = "0.1.29"
 qdrant-client = "1.15.0"
 
 # HTTP client
@@ -47,6 +47,7 @@ serde_json = "1.0.145"
 # Utilities
 dirs = "6.0.0"
 chrono = "0.4"
+strum = { version = "0.27.2", features = ["derive"] }
 
 [profile.release]
 lto = "thin"

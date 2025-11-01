@@ -1,5 +1,7 @@
-mod config;
+pub mod config;
+mod schema;
 mod types;
 
-pub use config::{Config, ConfigError, Provider, ProviderConfig, Result as ConfigResult};
+pub use config::{ConfigError, ConfigResult, ConfigSchema, FieldDescriptor, FieldType, FieldValue};
+pub use schema::{Config, Provider, ProviderConfig};
 pub use types::{Message, Role};

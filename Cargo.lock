@@ -1290,6 +1290,7 @@ dependencies = [
  "dirs",
  "serde",
  "serde_json",
+ "strum 0.27.2",
  "thiserror 2.0.17",
 ]
 
@@ -1660,7 +1661,7 @@ dependencies = [
  "itertools",
  "lru",
  "paste",
- "strum",
+ "strum 0.26.3",
  "unicode-segmentation",
  "unicode-truncate",
  "unicode-width 0.2.0",
@@ -1756,9 +1757,9 @@ dependencies = [
 
 [[package]]
 name = "rig-core"
-version = "0.23.0"
+version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd6507bcf17a87ca3dcf229c99f806742572b77b7764da0e7a4d8228ab0b223f"
+checksum = "5f9cbb51d97b03fb936caf5c1b05a7229cca0ddd569a0d09d9d2e2be41538fc2"
 dependencies = [
  "as-any",
  "async-stream",
@@ -1785,9 +1786,9 @@ dependencies = [
 
 [[package]]
 name = "rig-qdrant"
-version = "0.1.28"
+version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3704eebd52edd7b92a68679a5a8a1128c3042fcc798195b7abf6c443b215a6d4"
+checksum = "947cb6df6f3159776799f3d35fd975d309499553d8a14d6760ff7200d8382894"
 dependencies = [
  "qdrant-client",
  "rig-core",
@@ -2157,7 +2158,16 @@ version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fec0f0aef304996cf250b31b5a10dee7980c85da9d759361292b8bca5a18f06"
 dependencies = [
- "strum_macros",
+ "strum_macros 0.26.4",
+]
+
+[[package]]
+name = "strum"
+version = "0.27.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
+dependencies = [
+ "strum_macros 0.27.2",
 ]
 
 [[package]]
@@ -2170,6 +2180,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustversion",
+ "syn",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.27.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
  "syn",
 ]
 

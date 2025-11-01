@@ -7,9 +7,10 @@ use ratatui::{
 };
 use thiserror::Error;
 
+use crate::config_editor::ConfigEditor;
 use crate::theme::Theme;
 use crate::widgets::{HelpWidget, InputWidget, MessageWidget};
-use onyx_core::{Config, Message};
+use onyx_core::{Config, ConfigSchema, Message};
 
 #[derive(Debug, Error)]
 pub enum UiError {
@@ -18,6 +19,12 @@ pub enum UiError {
 }
 
 pub type Result<T> = std::result::Result<T, UiError>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppMode {
+    Chat,
+    Config,
+}
 
 pub struct App {
     messages: Vec<Message>,
@@ -41,6 +48,9 @@ pub struct App {
     undo_position: usize,
     undo_group_timer: std::time::Instant,
     config: Config,
+    mode: AppMode,
+    config_editor: Option<ConfigEditor>,
+    config_saved: bool,
 }
 
 impl App {
@@ -64,7 +74,7 @@ impl App {
             command_menu_selected: 0,
             available_commands: vec![
                 ("/help", "Show help information"),
-                ("/config", "Show config file location"),
+                ("/config", "Open configuration editor"),
                 ("/now", "Insert current date and time"),
                 ("/save", "Save conversation to log file"),
             ],
@@ -72,7 +82,36 @@ impl App {
             undo_position: 0,
             undo_group_timer: std::time::Instant::now(),
             config,
+            mode: AppMode::Chat,
+            config_editor: None,
+            config_saved: false,
         }
+    }
+
+    pub fn open_config_editor(&mut self) {
+        self.config_editor = Some(ConfigEditor::new(self.config.clone()));
+        self.mode = AppMode::Config;
+    }
+
+    pub fn close_config_editor(&mut self) {
+        self.config_editor = None;
+        self.mode = AppMode::Chat;
+        self.config_saved = false;
+    }
+
+    pub fn save_config_from_editor(&mut self) -> Result<()> {
+        if let Some(editor) = &self.config_editor {
+            self.config = editor.config.clone();
+            self.config
+                .save()
+                .map_err(|e| UiError::IoError(std::io::Error::other(e.to_string())))?;
+            self.config_saved = true;
+        }
+        Ok(())
+    }
+
+    pub fn get_config(&self) -> &Config {
+        &self.config
     }
 
     pub fn add_message(&mut self, message: Message) {
@@ -258,27 +297,89 @@ impl App {
     }
 
     pub fn draw(&mut self, frame: &mut Frame) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(3)])
-            .split(frame.area());
+        match self.mode {
+            AppMode::Chat => {
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Min(1), Constraint::Length(3)])
+                    .split(frame.area());
 
-        self.render_chat_area(frame, chunks[0]);
+                self.render_chat_area(frame, chunks[0]);
 
-        let input_widget = InputWidget::new(
-            &self.input,
-            &self.theme,
-            self.input_focused,
-            self.is_processing,
-            self.spinner_state,
-            self.cursor_position,
-            self.get_selection_range(),
-        );
-        input_widget.render(frame, chunks[1]);
+                let input_widget = InputWidget::new(
+                    &self.input,
+                    &self.theme,
+                    self.input_focused,
+                    self.is_processing,
+                    self.spinner_state,
+                    self.cursor_position,
+                    self.get_selection_range(),
+                );
+                input_widget.render(frame, chunks[1]);
 
-        if let Some((commands, selected)) = self.get_command_menu_state() {
-            self.render_command_menu(frame, chunks[1], &commands, selected);
+                if let Some((commands, selected)) = self.get_command_menu_state() {
+                    self.render_command_menu(frame, chunks[1], &commands, selected);
+                }
+            }
+            AppMode::Config => {
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Min(1), Constraint::Length(3)])
+                    .split(frame.area());
+
+                self.render_chat_area(frame, chunks[0]);
+
+                let input_widget = InputWidget::new(
+                    &self.input,
+                    &self.theme,
+                    false,
+                    self.is_processing,
+                    self.spinner_state,
+                    self.cursor_position,
+                    None,
+                );
+                input_widget.render(frame, chunks[1]);
+
+                if let Some(editor) = &mut self.config_editor {
+                    editor.render(frame, frame.area(), &self.theme);
+                }
+
+                if self.config_saved {
+                    self.render_save_notification(frame, frame.area());
+                }
+            }
         }
+    }
+
+    fn render_save_notification(&self, frame: &mut Frame, area: Rect) {
+        use ratatui::widgets::Clear;
+
+        let width = 40;
+        let height = 5;
+        let notification_area = Rect {
+            x: (area.width.saturating_sub(width)) / 2,
+            y: (area.height.saturating_sub(height)) / 2,
+            width,
+            height,
+        };
+
+        frame.render_widget(Clear, notification_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(self.theme.success)
+            .title(Span::styled(" Success ", self.theme.success));
+
+        let inner = block.inner(notification_area);
+        frame.render_widget(block, notification_area);
+
+        let message = Paragraph::new(Line::from(vec![
+            Span::styled("✓ ", self.theme.success),
+            Span::raw("Configuration saved!"),
+        ]))
+        .alignment(Alignment::Center);
+
+        frame.render_widget(message, inner);
     }
 
     fn render_command_menu(
@@ -321,7 +422,8 @@ impl App {
         }
 
         for msg in &self.messages {
-            let message_widget = MessageWidget::new(msg, &self.theme, chat_width, &self.config.timestamp_format);
+            let message_widget =
+                MessageWidget::new(msg, &self.theme, chat_width, &self.config.timestamp_format);
             lines.extend(message_widget.render());
             lines.push(Line::from(""));
         }
@@ -355,6 +457,11 @@ impl App {
             if key.kind != KeyEventKind::Press {
                 return Ok(false);
             }
+
+            if self.mode == AppMode::Config {
+                return self.handle_config_event(key);
+            }
+
             match key.code {
                 KeyCode::Char('c')
                     if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
@@ -548,11 +655,8 @@ impl App {
     pub fn handle_command(&mut self, cmd: &str) -> Option<String> {
         match cmd {
             "/config" => {
-                let path = Config::config_path_display();
-                Some(format!(
-                    "Config location: {}\n\nEdit this file to configure your API keys and settings.",
-                    path
-                ))
+                self.open_config_editor();
+                None
             }
             "/save" => match self.save_conversation_log() {
                 Ok(filename) => Some(format!("Conversation saved to: {}", filename)),
@@ -560,7 +664,7 @@ impl App {
             },
             "/help" => Some(
                 "Commands:\n  \
-                    /config - Show config file path\n  \
+                    /config - Open configuration editor\n  \
                     /save - Save conversation to log file\n  \
                     /help - Show this help\n\n\
                     Navigation:\n  \
@@ -574,6 +678,49 @@ impl App {
             ),
             _ => None,
         }
+    }
+
+    fn handle_config_event(&mut self, key: crossterm::event::KeyEvent) -> Result<bool> {
+        use crossterm::event::KeyModifiers;
+
+        let Some(editor) = &mut self.config_editor else {
+            return Ok(false);
+        };
+
+        if editor.editing {
+            match key.code {
+                KeyCode::Enter => editor.save_current_field(),
+                KeyCode::Esc => editor.cancel_editing(),
+                KeyCode::Char(c) => editor.insert_char(c),
+                KeyCode::Backspace => editor.delete_char(),
+                KeyCode::Delete => editor.delete_char_forward(),
+                KeyCode::Left => editor.move_cursor_left(),
+                KeyCode::Right => editor.move_cursor_right(),
+                KeyCode::Up if editor.show_enum_menu => editor.enum_menu_up(),
+                KeyCode::Down if editor.show_enum_menu => editor.enum_menu_down(),
+                _ => return Ok(false),
+            }
+        } else {
+            match key.code {
+                KeyCode::Esc => self.close_config_editor(),
+                KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => editor.scroll_up(),
+                KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    editor.scroll_down()
+                }
+                KeyCode::Up => editor.prev_field(),
+                KeyCode::Down => editor.next_field(),
+                KeyCode::PageUp => editor.scroll_page_up(),
+                KeyCode::PageDown => editor.scroll_page_down(),
+                KeyCode::Home => editor.scroll_to_top(),
+                KeyCode::Enter => editor.start_editing(),
+                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.save_config_from_editor()?
+                }
+                _ => return Ok(false),
+            }
+        }
+
+        Ok(true)
     }
 }
 
