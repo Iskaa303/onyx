@@ -3,12 +3,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use onyx_agent::ChatAgent;
+use onyx_agent::{ChatAgent, StreamEvent};
 use onyx_core::{Config, ConfigSchema, Message};
 use onyx_tui::App;
 
 enum AppEvent {
-    Response(Message),
+    StreamChunk(StreamEvent),
 }
 
 fn parse_args() -> Option<PathBuf> {
@@ -107,19 +107,32 @@ async fn main() -> Result<()> {
                 if let Some(ref agent) = agent {
                     app.set_processing(true);
 
+                    let streaming_msg = Message::assistant_streaming();
+                    app.add_message(streaming_msg);
+
                     let agent_arc = Arc::clone(agent);
                     let tx_clone = tx.clone();
+
                     tokio::spawn(async move {
-                        match agent_arc.send(user_msg).await {
-                            Ok(response) => {
-                                let _ = tx_clone.send(AppEvent::Response(response));
-                            }
-                            Err(e) => {
-                                let _ = tx_clone.send(AppEvent::Response(Message::assistant(
-                                    format!("Error: {}", e),
-                                )));
+                        let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
+
+                        let agent_handle = {
+                            let agent_arc = Arc::clone(&agent_arc);
+                            let stream_tx = stream_tx.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = agent_arc.send_stream(user_msg, stream_tx).await {
+                                    eprintln!("Stream error: {}", e);
+                                }
+                            })
+                        };
+
+                        while let Some(event) = stream_rx.recv().await {
+                            if tx_clone.send(AppEvent::StreamChunk(event)).is_err() {
+                                break;
                             }
                         }
+
+                        let _ = agent_handle.await;
                     });
                 } else {
                     app.add_message(Message::assistant(
@@ -130,9 +143,28 @@ async fn main() -> Result<()> {
             }
         }
 
-        while let Ok(AppEvent::Response(msg)) = rx.try_recv() {
-            app.add_message(msg);
-            app.set_processing(false);
+        while let Ok(AppEvent::StreamChunk(chunk)) = rx.try_recv() {
+            match chunk {
+                StreamEvent::ThinkingStart => {}
+                StreamEvent::ThinkingChunk(text) => {
+                    app.update_last_message(|msg| msg.append_thinking(text));
+                }
+                StreamEvent::ThinkingEnd => {}
+                StreamEvent::ContentChunk(text) => {
+                    app.update_last_message(|msg| msg.append_content(text));
+                }
+                StreamEvent::Done => {
+                    app.update_last_message(|msg| msg.finish_streaming());
+                    app.set_processing(false);
+                }
+                StreamEvent::Error(err) => {
+                    app.update_last_message(|msg| {
+                        msg.append_content(format!("\n\nError: {}", err));
+                        msg.finish_streaming();
+                    });
+                    app.set_processing(false);
+                }
+            }
         }
     }
 

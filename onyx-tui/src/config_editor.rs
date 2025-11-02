@@ -4,10 +4,13 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation},
 };
 
+use crate::scroll::ScrollManager;
+use crate::text_input::TextInputState;
 use crate::theme::Theme;
+use crate::widgets::ConfigFieldWidget;
 
 pub struct ConfigEditor {
     pub config: Config,
@@ -15,12 +18,10 @@ pub struct ConfigEditor {
     sections: Vec<String>,
     selected_index: usize,
     pub editing: bool,
-    pub input_buffer: String,
-    pub cursor_position: usize,
+    input_state: TextInputState,
     pub show_enum_menu: bool,
     pub enum_menu_selected: usize,
-    scroll: usize,
-    scroll_state: ScrollbarState,
+    scroll_manager: ScrollManager,
 }
 
 impl ConfigEditor {
@@ -34,12 +35,10 @@ impl ConfigEditor {
             fields,
             selected_index: 0,
             editing: false,
-            input_buffer: String::new(),
-            cursor_position: 0,
+            input_state: TextInputState::new(),
             show_enum_menu: false,
             enum_menu_selected: 0,
-            scroll: 0,
-            scroll_state: ScrollbarState::default(),
+            scroll_manager: ScrollManager::new(),
         }
     }
 
@@ -79,23 +78,21 @@ impl ConfigEditor {
         }
 
         self.editing = true;
-        self.input_buffer = self.current_value();
-        self.cursor_position = self.input_buffer.len();
+        let value = self.current_value();
+        self.input_state = TextInputState::with_text(value.clone());
 
         if field_type == FieldType::Enum {
             self.show_enum_menu = true;
-            let current_value = self.current_value();
             self.enum_menu_selected = enum_values
                 .iter()
-                .position(|v| v.to_lowercase() == current_value.to_lowercase())
+                .position(|v| v.to_lowercase() == value.to_lowercase())
                 .unwrap_or(0);
         }
     }
 
     pub fn cancel_editing(&mut self) {
         self.editing = false;
-        self.input_buffer.clear();
-        self.cursor_position = 0;
+        self.input_state.clear();
         self.show_enum_menu = false;
     }
 
@@ -108,7 +105,7 @@ impl ConfigEditor {
                 self.set_current_value(selected_value);
             }
         } else {
-            self.set_current_value(self.input_buffer.clone());
+            self.set_current_value(self.input_state.text().to_string());
         }
 
         self.cancel_editing();
@@ -118,39 +115,29 @@ impl ConfigEditor {
         if self.show_enum_menu {
             return;
         }
-        self.input_buffer.insert(self.cursor_position, c);
-        self.cursor_position += 1;
+        self.input_state.insert_char(c);
     }
 
     pub fn delete_char(&mut self) {
         if self.show_enum_menu {
             return;
         }
-        if self.cursor_position > 0 {
-            self.cursor_position -= 1;
-            self.input_buffer.remove(self.cursor_position);
-        }
+        self.input_state.delete_char_before();
     }
 
     pub fn delete_char_forward(&mut self) {
         if self.show_enum_menu {
             return;
         }
-        if self.cursor_position < self.input_buffer.len() {
-            self.input_buffer.remove(self.cursor_position);
-        }
+        self.input_state.delete_char_after();
     }
 
     pub fn move_cursor_left(&mut self) {
-        if self.cursor_position > 0 {
-            self.cursor_position -= 1;
-        }
+        self.input_state.move_cursor_left(false);
     }
 
     pub fn move_cursor_right(&mut self) {
-        if self.cursor_position < self.input_buffer.len() {
-            self.cursor_position += 1;
-        }
+        self.input_state.move_cursor_right(false);
     }
 
     pub fn next_field(&mut self) {
@@ -180,26 +167,32 @@ impl ConfigEditor {
     }
 
     pub fn scroll_up(&mut self) {
-        self.scroll = self.scroll.saturating_sub(1);
+        self.scroll_manager.scroll_up(1);
     }
 
     pub fn scroll_down(&mut self) {
-        self.scroll = self.scroll.saturating_add(1);
+        self.scroll_manager.scroll_down(1);
     }
 
     pub fn scroll_page_up(&mut self) {
-        self.scroll = self.scroll.saturating_sub(10);
+        self.scroll_manager.scroll_page_up();
     }
 
     pub fn scroll_page_down(&mut self) {
-        self.scroll = self.scroll.saturating_add(10);
+        self.scroll_manager.scroll_page_down();
     }
 
     pub fn scroll_to_top(&mut self) {
-        self.scroll = 0;
+        self.scroll_manager.scroll_to_top();
     }
 
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Theme,
+        terminal_cursor: &crate::cursor::TerminalCursor,
+    ) {
         let dialog_width = area.width.min(90);
         let dialog_height = area.height.min(30);
 
@@ -226,7 +219,7 @@ impl ConfigEditor {
             .constraints([Constraint::Min(1), Constraint::Length(3)])
             .split(inner);
 
-        self.render_fields(frame, chunks[0], theme);
+        self.render_fields(frame, chunks[0], theme, terminal_cursor);
         self.render_footer(frame, chunks[1], theme);
 
         if self.show_enum_menu {
@@ -234,10 +227,17 @@ impl ConfigEditor {
         }
     }
 
-    fn render_fields(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    fn render_fields(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Theme,
+        terminal_cursor: &crate::cursor::TerminalCursor,
+    ) {
         let mut lines = Vec::new();
-        let mut selected_line = 0;
-        let mut current_line = 0;
+        let mut selected_line: usize = 0;
+        let mut current_line: usize = 0;
+        let mut cursor_position: Option<(u16, u16)> = None;
 
         for section in &self.sections {
             if !lines.is_empty() {
@@ -256,13 +256,38 @@ impl ConfigEditor {
                 if &field.section == section {
                     let field_index =
                         self.fields.iter().position(|f| f.id == field.id).unwrap_or(0);
-                    if field_index == self.selected_index {
+                    let is_selected = field_index == self.selected_index;
+                    let is_editing = is_selected && self.editing && !self.show_enum_menu;
+
+                    if is_selected {
                         selected_line = current_line;
                     }
 
-                    let lines_before = lines.len();
-                    self.render_field(&mut lines, field, theme);
-                    current_line += lines.len() - lines_before;
+                    let display_value = if is_editing {
+                        self.input_state.text().to_string()
+                    } else {
+                        self.get_display_value(field)
+                    };
+
+                    let widget = ConfigFieldWidget::new(
+                        field.label.clone(),
+                        display_value,
+                        is_selected,
+                        is_editing,
+                        self.input_state.cursor_position(),
+                        theme,
+                    );
+
+                    lines.push(widget.render());
+
+                    if is_editing {
+                        let line_in_viewport =
+                            current_line.saturating_sub(self.scroll_manager.position());
+                        cursor_position =
+                            widget.get_cursor_position(area, area.y + line_in_viewport as u16);
+                    }
+
+                    current_line += 1;
                 }
             }
         }
@@ -270,74 +295,23 @@ impl ConfigEditor {
         let content_length = lines.len();
         let viewport_height = area.height as usize;
 
-        if selected_line < self.scroll {
-            self.scroll = selected_line;
-        } else if selected_line >= self.scroll + viewport_height {
-            self.scroll = selected_line.saturating_sub(viewport_height - 1);
-        }
+        self.scroll_manager.ensure_visible(selected_line, viewport_height, content_length);
+        self.scroll_manager.update(content_length, viewport_height);
 
-        self.scroll = self.scroll.min(content_length.saturating_sub(viewport_height));
-        self.scroll_state = self.scroll_state.content_length(content_length).position(self.scroll);
-
-        let paragraph = Paragraph::new(lines).scroll((self.scroll as u16, 0));
+        let paragraph = Paragraph::new(lines).scroll((self.scroll_manager.position() as u16, 0));
         frame.render_widget(paragraph, area);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(Some("↑"))
                 .end_symbol(Some("↓")),
             area,
-            &mut self.scroll_state,
+            self.scroll_manager.scrollbar_state_mut(),
         );
-    }
 
-    fn render_field(&self, lines: &mut Vec<Line>, field: &FieldDescriptor, theme: &Theme) {
-        let field_index = self.fields.iter().position(|f| f.id == field.id).unwrap_or(0);
-        let is_selected = field_index == self.selected_index;
-        let is_editing = is_selected && self.editing && !self.show_enum_menu;
-
-        let label_style = if is_selected {
-            theme.input_active.add_modifier(Modifier::BOLD)
-        } else {
-            theme.help_text
-        };
-
-        let value_style = if is_editing {
-            theme.input_active
-        } else if is_selected {
-            theme.border_focused
-        } else {
-            Style::default()
-        };
-
-        let prefix = if is_selected { "▶ " } else { "  " };
-        let label_width = 22;
-        let formatted_label = format!("{}{:<width$}", prefix, field.label, width = label_width);
-
-        let display_value = if is_editing && !self.show_enum_menu {
-            if self.input_buffer.is_empty() {
-                "█".to_string()
-            } else if self.cursor_position >= self.input_buffer.len() {
-                format!("{}█", &self.input_buffer)
-            } else {
-                let before = &self.input_buffer[..self.cursor_position];
-                let after = &self.input_buffer[self.cursor_position..];
-                format!("{}█{}", before, after)
-            }
-        } else {
-            self.get_display_value(field)
-        };
-
-        lines.push(Line::from(vec![
-            Span::styled(formatted_label, label_style),
-            Span::raw(" : "),
-            Span::styled(display_value, value_style),
-        ]));
-
-        if is_selected && !field.hint.is_empty() {
-            lines.push(Line::from(Span::styled(
-                format!("    {}", field.hint),
-                theme.help_text.add_modifier(Modifier::ITALIC),
-            )));
+        if let Some((x, y)) = cursor_position
+            && terminal_cursor.is_visible()
+        {
+            frame.set_cursor_position((x, y));
         }
     }
 
@@ -358,6 +332,7 @@ impl ConfigEditor {
                 FieldValue::OptionalString(Some(s)) => s.clone(),
                 FieldValue::OptionalString(None) => String::new(),
                 FieldValue::String(s) => s.clone(),
+                FieldValue::U64(n) => n.to_string(),
             })
             .unwrap_or_default();
 
@@ -376,7 +351,7 @@ impl ConfigEditor {
         let hints = if self.editing {
             "[Enter] Save  [Esc] Cancel  [←/→] Move cursor"
         } else {
-            "[↑/↓] Navigate  [PgUp/PgDn] Scroll  [Home] Top  [Enter] Edit  [Ctrl+S] Save  [Esc] Close"
+            "[↑/↓] Scroll  [Tab/Shift+Tab] Navigate fields  [Enter] Edit  [Ctrl+S] Save  [Esc] Close"
         };
 
         let footer = Paragraph::new(Line::from(Span::styled(hints, theme.help_text)))

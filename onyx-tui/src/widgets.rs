@@ -7,14 +7,16 @@ use ratatui::{
 };
 use std::time::SystemTime;
 
+use crate::cursor::{CursorPosition, InlineCursor};
 use crate::theme::Theme;
-use onyx_core::{Message, Role};
+use onyx_core::{CursorStyle, Message, Role};
 
 pub struct MessageWidget<'a> {
     message: &'a Message,
     theme: &'a Theme,
     width: usize,
     timestamp_format: &'a str,
+    cursor_style: CursorStyle,
 }
 
 impl<'a> MessageWidget<'a> {
@@ -23,8 +25,9 @@ impl<'a> MessageWidget<'a> {
         theme: &'a Theme,
         width: usize,
         timestamp_format: &'a str,
+        cursor_style: CursorStyle,
     ) -> Self {
-        Self { message, theme, width, timestamp_format }
+        Self { message, theme, width, timestamp_format, cursor_style }
     }
 
     pub fn render(&self) -> Vec<Line<'a>> {
@@ -36,22 +39,74 @@ impl<'a> MessageWidget<'a> {
         let mut lines = Vec::new();
 
         let timestamp = self.format_timestamp(self.message.timestamp);
-        lines.push(Line::from(vec![
+        let mut title_spans = vec![
             Span::styled("┌─ ", self.theme.border),
             Span::styled(prefix, style),
             Span::styled(" ", self.theme.border),
             Span::styled(timestamp, self.theme.help_text),
-            Span::styled(" ─", self.theme.border),
-        ]));
+        ];
+
+        if self.message.is_streaming {
+            title_spans.push(Span::styled(" ", self.theme.border));
+            title_spans.push(Span::styled("⠿", self.theme.success.add_modifier(Modifier::BOLD)));
+            title_spans.push(Span::styled(" streaming", self.theme.help_text));
+        }
+
+        title_spans.push(Span::styled(" ─", self.theme.border));
+        lines.push(Line::from(title_spans));
 
         let content_width = self.width.saturating_sub(4);
-        let wrapped_lines = wrap_text(&self.message.content, content_width);
 
-        for line in wrapped_lines {
+        if let Some(thinking) = &self.message.thinking {
             lines.push(Line::from(vec![
                 Span::styled("│ ", self.theme.border),
-                Span::styled(line, style.remove_modifier(Modifier::BOLD)),
+                Span::styled("💭 Thinking...", self.theme.help_text.add_modifier(Modifier::ITALIC)),
             ]));
+
+            let thinking_style = self.theme.help_text.add_modifier(Modifier::DIM);
+            let wrapped_thinking = wrap_text(thinking, content_width.saturating_sub(2));
+
+            for line in wrapped_thinking {
+                lines.push(Line::from(vec![
+                    Span::styled("│   ", self.theme.border),
+                    Span::styled(line, thinking_style),
+                ]));
+            }
+
+            lines.push(Line::from(vec![Span::styled("│", self.theme.border)]));
+        }
+
+        if !self.message.content.is_empty() || self.message.is_streaming {
+            let wrapped_lines = wrap_text(&self.message.content, content_width);
+
+            if wrapped_lines.is_empty() && self.message.is_streaming {
+                let inline_cursor = InlineCursor::new(self.cursor_style);
+                lines.push(Line::from(vec![
+                    Span::styled("│ ", self.theme.border),
+                    inline_cursor.render_char(style),
+                ]));
+            } else {
+                for (idx, line) in wrapped_lines.iter().enumerate() {
+                    let mut line_spans = vec![Span::styled("│ ", self.theme.border)];
+
+                    if idx == wrapped_lines.len() - 1 && self.message.is_streaming {
+                        line_spans.push(Span::styled(
+                            line.clone(),
+                            style.remove_modifier(Modifier::BOLD),
+                        ));
+
+                        let inline_cursor = InlineCursor::new(self.cursor_style);
+                        line_spans.push(inline_cursor.render_char(style));
+                    } else {
+                        line_spans.push(Span::styled(
+                            line.clone(),
+                            style.remove_modifier(Modifier::BOLD),
+                        ));
+                    }
+
+                    lines.push(Line::from(line_spans));
+                }
+            }
         }
 
         lines.push(Line::from(Span::styled("└─", self.theme.border)));
@@ -122,32 +177,20 @@ impl<'a> InputWidget<'a> {
                 let after_sel = &self.input[actual_end..];
                 spans.extend(self.style_input_text(after_sel, base_style));
             }
-        } else if self.cursor_position >= self.input.len() {
-            spans.extend(self.style_input_text(self.input, base_style));
-            if self.focused {
-                spans.push(Span::styled("█".to_string(), self.theme.input_active));
-            }
         } else {
-            let before_cursor = &self.input[..self.cursor_position];
-            spans.extend(self.style_input_text(before_cursor, base_style));
-
-            if self.focused {
-                let char_at_cursor = self.input.chars().nth(self.cursor_position).unwrap_or(' ');
-                spans.push(Span::styled(
-                    char_at_cursor.to_string(),
-                    self.theme.input_active.add_modifier(Modifier::REVERSED),
-                ));
-            }
-
-            let after_cursor_start = self.cursor_position
-                + self.input[self.cursor_position..].chars().next().map_or(1, |c| c.len_utf8());
-            if after_cursor_start < self.input.len() {
-                let after_cursor = &self.input[after_cursor_start..];
-                spans.extend(self.style_input_text(after_cursor, base_style));
-            }
+            spans.extend(self.style_input_text(self.input, base_style));
         }
 
         spans
+    }
+
+    pub fn get_cursor_position(&self, area: Rect) -> Option<(u16, u16)> {
+        if !self.focused {
+            return None;
+        }
+
+        let pos = CursorPosition::calculate(self.input, self.cursor_position, area, true)?;
+        Some((pos.x, pos.y))
     }
 
     fn style_input_text(&self, text: &str, base_style: Style) -> Vec<Span<'static>> {
@@ -188,7 +231,12 @@ impl<'a> InputWidget<'a> {
         spans
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
+    pub fn render(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        terminal_cursor: &crate::cursor::TerminalCursor,
+    ) {
         let style = if self.focused { self.theme.input_active } else { self.theme.input_inactive };
 
         let border_style = if self.focused { self.theme.border_focused } else { self.theme.border };
@@ -227,20 +275,23 @@ impl<'a> InputWidget<'a> {
             .title(title)
             .title_bottom(bottom_title);
 
-        let input_with_cursor = if self.input.is_empty() {
-            if self.focused {
-                vec![Span::styled("█", self.theme.input_active)]
-            } else {
-                vec![Span::styled("Type your message here...", self.theme.help_text)]
-            }
+        let input_text = if self.input.is_empty() && !self.focused {
+            vec![Span::styled("Type your message here...", self.theme.help_text)]
         } else {
             self.render_input_with_cursor(style)
         };
 
         let paragraph =
-            Paragraph::new(Line::from(input_with_cursor)).block(block).wrap(Wrap { trim: false });
+            Paragraph::new(Line::from(input_text)).block(block).wrap(Wrap { trim: false });
 
         frame.render_widget(paragraph, area);
+
+        if self.focused
+            && let Some((x, y)) = self.get_cursor_position(area)
+            && terminal_cursor.is_visible()
+        {
+            frame.set_cursor_position((x, y));
+        }
     }
 }
 
@@ -387,4 +438,68 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     }
 
     result
+}
+
+pub struct ConfigFieldWidget<'a> {
+    label: String,
+    value: String,
+    is_selected: bool,
+    is_editing: bool,
+    cursor_position: usize,
+    theme: &'a Theme,
+}
+
+impl<'a> ConfigFieldWidget<'a> {
+    pub fn new(
+        label: String,
+        value: String,
+        is_selected: bool,
+        is_editing: bool,
+        cursor_position: usize,
+        theme: &'a Theme,
+    ) -> Self {
+        Self { label, value, is_selected, is_editing, cursor_position, theme }
+    }
+
+    pub fn render(&self) -> Line<'static> {
+        let label_style = if self.is_selected {
+            self.theme.input_active.add_modifier(Modifier::BOLD)
+        } else {
+            self.theme.help_text
+        };
+
+        let value_style = if self.is_editing {
+            self.theme.input_active
+        } else if self.is_selected {
+            self.theme.border_focused
+        } else {
+            Style::default()
+        };
+
+        let prefix = if self.is_selected { "▶ " } else { "  " };
+        let label_width = 22;
+        let formatted_label = format!("{}{:<width$}", prefix, self.label, width = label_width);
+
+        Line::from(vec![
+            Span::styled(formatted_label, label_style),
+            Span::raw(" : "),
+            Span::styled(self.value.clone(), value_style),
+        ])
+    }
+
+    pub fn get_cursor_position(&self, area: Rect, line_y: u16) -> Option<(u16, u16)> {
+        if !self.is_editing {
+            return None;
+        }
+
+        const PREFIX_WIDTH: usize = 2;
+        const LABEL_WIDTH: usize = 22;
+        const SEPARATOR_WIDTH: usize = 3;
+
+        let cursor_x =
+            area.x + (PREFIX_WIDTH + LABEL_WIDTH + SEPARATOR_WIDTH + self.cursor_position) as u16;
+        let cursor_y = line_y;
+
+        Some((cursor_x, cursor_y))
+    }
 }

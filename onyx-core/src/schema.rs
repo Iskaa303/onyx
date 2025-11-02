@@ -1,4 +1,5 @@
 use crate::config::*;
+use crate::types::CursorStyle;
 use crate::{config_defaults, config_fields};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -36,6 +37,8 @@ pub struct Config {
     pub qdrant_url: String,
     pub qdrant_api_key: Option<String>,
     pub timestamp_format: String,
+    pub cursor_style: CursorStyle,
+    pub cursor_blink_interval: u64,
     #[serde(skip)]
     pub config_path: Option<PathBuf>,
 }
@@ -44,7 +47,7 @@ config_defaults! {
     active_provider => Provider::OpenAI,
     openai => ProviderConfig {
         api_key: None,
-        model: "gpt-4".to_string(),
+        model: "gpt-5-nano".to_string(),
         url: None,
     },
     anthropic => ProviderConfig {
@@ -60,6 +63,8 @@ config_defaults! {
     qdrant_url => "http://localhost:6334".to_string(),
     qdrant_api_key => None,
     timestamp_format => "%Y-%m-%d %H:%M:%S".to_string(),
+    cursor_style => CursorStyle::default(),
+    cursor_blink_interval => 500u64,
     config_path => None,
 }
 
@@ -101,6 +106,22 @@ config_fields! {
             "Timestamp Format",
             "strftime format (e.g., %Y-%m-%d %H:%M:%S)",
             timestamp_format
+        ),
+        cursor_style: Enum(
+            "Cursor Style",
+            "Choose cursor appearance",
+            cursor_style,
+            vec![
+                "block".to_string(),
+                "block_blinking".to_string(),
+                "line".to_string(),
+                "line_blinking".to_string()
+            ]
+        ),
+        cursor_blink_interval: U64(
+            "Cursor Blink Interval",
+            "Blink interval in milliseconds (e.g., 500)",
+            cursor_blink_interval
         )
     }
 }

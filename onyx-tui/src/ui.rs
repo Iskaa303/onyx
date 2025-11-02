@@ -3,11 +3,14 @@ use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation},
 };
 use thiserror::Error;
 
 use crate::config_editor::ConfigEditor;
+use crate::cursor::TerminalCursor;
+use crate::scroll::ScrollManager;
+use crate::text_input::{TextInputState, UndoManager};
 use crate::theme::Theme;
 use crate::widgets::{HelpWidget, InputWidget, MessageWidget};
 use onyx_core::{Config, ConfigSchema, Message};
@@ -28,46 +31,40 @@ pub enum AppMode {
 
 pub struct App {
     messages: Vec<Message>,
-    input: String,
-    cursor_position: usize,
-    selection_start: Option<usize>,
+    input_state: TextInputState,
+    undo_manager: UndoManager,
     should_quit: bool,
     show_help: bool,
     submit: bool,
-    scroll: usize,
-    scroll_state: ScrollbarState,
+    scroll_manager: ScrollManager,
     theme: Theme,
     input_focused: bool,
-    auto_scroll: bool,
     is_processing: bool,
     spinner_state: usize,
     show_command_menu: bool,
     command_menu_selected: usize,
     available_commands: Vec<(&'static str, &'static str)>,
-    undo_history: Vec<(String, usize)>,
-    undo_position: usize,
-    undo_group_timer: std::time::Instant,
     config: Config,
     mode: AppMode,
     config_editor: Option<ConfigEditor>,
     config_saved: bool,
+    terminal_cursor: TerminalCursor,
 }
 
 impl App {
     pub fn new(config: Config) -> Self {
+        let terminal_cursor =
+            TerminalCursor::new(config.cursor_style, config.cursor_blink_interval);
         Self {
             messages: Vec::new(),
-            input: String::new(),
-            cursor_position: 0,
-            selection_start: None,
+            input_state: TextInputState::new(),
+            undo_manager: UndoManager::new(),
             should_quit: false,
             show_help: true,
             submit: false,
-            scroll: 0,
-            scroll_state: ScrollbarState::default(),
+            scroll_manager: ScrollManager::new(),
             theme: Theme::default(),
             input_focused: true,
-            auto_scroll: true,
             is_processing: false,
             spinner_state: 0,
             show_command_menu: false,
@@ -78,13 +75,11 @@ impl App {
                 ("/now", "Insert current date and time"),
                 ("/save", "Save conversation to log file"),
             ],
-            undo_history: vec![(String::new(), 0)],
-            undo_position: 0,
-            undo_group_timer: std::time::Instant::now(),
             config,
             mode: AppMode::Chat,
             config_editor: None,
             config_saved: false,
+            terminal_cursor,
         }
     }
 
@@ -106,6 +101,8 @@ impl App {
                 .save()
                 .map_err(|e| UiError::IoError(std::io::Error::other(e.to_string())))?;
             self.config_saved = true;
+            self.terminal_cursor =
+                TerminalCursor::new(self.config.cursor_style, self.config.cursor_blink_interval);
         }
         Ok(())
     }
@@ -116,7 +113,21 @@ impl App {
 
     pub fn add_message(&mut self, message: Message) {
         self.messages.push(message);
-        self.auto_scroll = true;
+        self.scroll_manager.enable_auto_scroll();
+    }
+
+    pub fn update_last_message<F>(&mut self, update_fn: F)
+    where
+        F: FnOnce(&mut Message),
+    {
+        if let Some(last_msg) = self.messages.last_mut() {
+            update_fn(last_msg);
+            self.scroll_manager.enable_auto_scroll();
+        }
+    }
+
+    pub fn get_last_message_mut(&mut self) -> Option<&mut Message> {
+        self.messages.last_mut()
     }
 
     pub fn take_input(&mut self) -> Option<String> {
@@ -124,18 +135,15 @@ impl App {
             return None;
         }
         self.submit = false;
-        if self.input.is_empty() {
+        if self.input_state.is_empty() {
             return None;
         }
 
-        let input = std::mem::take(&mut self.input);
+        let input = self.input_state.take_text();
 
-        self.cursor_position = 0;
-        self.selection_start = None;
         self.show_command_menu = false;
         self.command_menu_selected = 0;
-        self.undo_history = vec![(String::new(), 0)];
-        self.undo_position = 0;
+        self.undo_manager.clear();
 
         Some(Self::expand_now_command(&input))
     }
@@ -154,8 +162,7 @@ impl App {
 
     pub fn clear_chat(&mut self) {
         self.messages.clear();
-        self.scroll = 0;
-        self.auto_scroll = true;
+        self.scroll_manager.reset();
     }
 
     pub fn save_conversation_log(&self) -> Result<String> {
@@ -189,7 +196,9 @@ impl App {
     }
 
     fn update_command_menu(&mut self) {
-        let input_before_cursor = &self.input[..self.cursor_position];
+        let input = self.input_state.text();
+        let cursor_position = self.input_state.cursor_position();
+        let input_before_cursor = &input[..cursor_position];
 
         if let Some(last_word_start) = input_before_cursor.rfind(|c: char| c.is_whitespace()) {
             let word = &input_before_cursor[last_word_start + 1..];
@@ -207,7 +216,9 @@ impl App {
     }
 
     fn get_filtered_commands(&self) -> Vec<(&'static str, &'static str)> {
-        let input_before_cursor = &self.input[..self.cursor_position];
+        let input = self.input_state.text();
+        let cursor_position = self.input_state.cursor_position();
+        let input_before_cursor = &input[..cursor_position];
 
         let command_prefix =
             if let Some(last_word_start) = input_before_cursor.rfind(|c: char| c.is_whitespace()) {
@@ -237,59 +248,6 @@ impl App {
         None
     }
 
-    pub fn get_selection_range(&self) -> Option<(usize, usize)> {
-        if let Some(start) = self.selection_start {
-            let (sel_start, sel_end) = if start < self.cursor_position {
-                (start, self.cursor_position)
-            } else {
-                (self.cursor_position, start)
-            };
-            Some((sel_start, sel_end))
-        } else {
-            None
-        }
-    }
-
-    fn clear_selection(&mut self) {
-        self.selection_start = None;
-    }
-
-    fn save_to_undo(&mut self, force: bool) {
-        let now = std::time::Instant::now();
-        let elapsed = now.duration_since(self.undo_group_timer);
-        let should_save = force || elapsed.as_millis() > 500;
-
-        if should_save {
-            if self.undo_position < self.undo_history.len() {
-                self.undo_history.truncate(self.undo_position + 1);
-            }
-
-            let state = (self.input.clone(), self.cursor_position);
-            if self.undo_history.last() != Some(&state) {
-                self.undo_history.push(state);
-                self.undo_position = self.undo_history.len() - 1;
-
-                if self.undo_history.len() > 100 {
-                    self.undo_history.remove(0);
-                    self.undo_position = self.undo_position.saturating_sub(1);
-                }
-            }
-
-            self.undo_group_timer = now;
-        }
-    }
-
-    fn undo(&mut self) {
-        if self.undo_position > 0 {
-            self.undo_position -= 1;
-            let (input, cursor) = self.undo_history[self.undo_position].clone();
-            self.input = input;
-            self.cursor_position = cursor;
-            self.clear_selection();
-            self.update_command_menu();
-        }
-    }
-
     fn expand_now_command(input: &str) -> String {
         let now = chrono::Local::now();
         let formatted = now.format("%Y-%m-%d %H:%M:%S").to_string();
@@ -297,6 +255,8 @@ impl App {
     }
 
     pub fn draw(&mut self, frame: &mut Frame) {
+        self.terminal_cursor.update();
+
         match self.mode {
             AppMode::Chat => {
                 let chunks = Layout::default()
@@ -307,15 +267,15 @@ impl App {
                 self.render_chat_area(frame, chunks[0]);
 
                 let input_widget = InputWidget::new(
-                    &self.input,
+                    self.input_state.text(),
                     &self.theme,
                     self.input_focused,
                     self.is_processing,
                     self.spinner_state,
-                    self.cursor_position,
-                    self.get_selection_range(),
+                    self.input_state.cursor_position(),
+                    self.input_state.selection_range(),
                 );
-                input_widget.render(frame, chunks[1]);
+                input_widget.render(frame, chunks[1], &self.terminal_cursor);
 
                 if let Some((commands, selected)) = self.get_command_menu_state() {
                     self.render_command_menu(frame, chunks[1], &commands, selected);
@@ -330,18 +290,18 @@ impl App {
                 self.render_chat_area(frame, chunks[0]);
 
                 let input_widget = InputWidget::new(
-                    &self.input,
+                    self.input_state.text(),
                     &self.theme,
                     false,
                     self.is_processing,
                     self.spinner_state,
-                    self.cursor_position,
+                    self.input_state.cursor_position(),
                     None,
                 );
-                input_widget.render(frame, chunks[1]);
+                input_widget.render(frame, chunks[1], &self.terminal_cursor);
 
                 if let Some(editor) = &mut self.config_editor {
-                    editor.render(frame, frame.area(), &self.theme);
+                    editor.render(frame, frame.area(), &self.theme, &self.terminal_cursor);
                 }
 
                 if self.config_saved {
@@ -349,6 +309,8 @@ impl App {
                 }
             }
         }
+
+        let _ = self.terminal_cursor.apply();
     }
 
     fn render_save_notification(&self, frame: &mut Frame, area: Rect) {
@@ -422,8 +384,13 @@ impl App {
         }
 
         for msg in &self.messages {
-            let message_widget =
-                MessageWidget::new(msg, &self.theme, chat_width, &self.config.timestamp_format);
+            let message_widget = MessageWidget::new(
+                msg,
+                &self.theme,
+                chat_width,
+                &self.config.timestamp_format,
+                self.config.cursor_style,
+            );
             lines.extend(message_widget.render());
             lines.push(Line::from(""));
         }
@@ -431,27 +398,30 @@ impl App {
         let content_length = lines.len();
         let viewport_height = inner_area.height as usize;
 
-        self.scroll = if self.auto_scroll {
-            content_length.saturating_sub(viewport_height)
-        } else {
-            self.scroll.min(content_length.saturating_sub(1))
-        };
-
-        self.scroll_state = self.scroll_state.content_length(content_length).position(self.scroll);
+        self.scroll_manager.update(content_length, viewport_height);
 
         frame.render_widget(block, area);
-        frame.render_widget(Paragraph::new(lines).scroll((self.scroll as u16, 0)), inner_area);
+        frame.render_widget(
+            Paragraph::new(lines).scroll((self.scroll_manager.position() as u16, 0)),
+            inner_area,
+        );
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(Some("↑"))
                 .end_symbol(Some("↓")),
             inner_area,
-            &mut self.scroll_state,
+            self.scroll_manager.scrollbar_state_mut(),
         );
     }
 
     pub fn handle_event(&mut self) -> Result<bool> {
-        if event::poll(std::time::Duration::from_millis(100))?
+        let poll_duration = if self.is_processing {
+            std::time::Duration::from_millis(16)
+        } else {
+            std::time::Duration::from_millis(100)
+        };
+
+        if event::poll(poll_duration)?
             && let Event::Key(key) = event::read()?
         {
             if key.kind != KeyEventKind::Press {
@@ -478,26 +448,26 @@ impl App {
                 KeyCode::Char('a')
                     if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
                 {
-                    self.selection_start = Some(0);
-                    self.cursor_position = self.input.len();
+                    self.input_state.select_all();
                     return Ok(true);
                 }
                 KeyCode::Char('z')
                     if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
                 {
-                    self.undo();
+                    if let Some(state) = self.undo_manager.undo() {
+                        self.input_state = state;
+                        self.update_command_menu();
+                    }
                     return Ok(true);
                 }
                 KeyCode::Char('d')
                     if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
                 {
-                    if self.input.is_empty() {
+                    if self.input_state.is_empty() {
                         self.should_quit = true;
                     } else {
-                        self.save_to_undo(true);
-                        self.input.clear();
-                        self.cursor_position = 0;
-                        self.clear_selection();
+                        self.undo_manager.save(&self.input_state, true);
+                        self.input_state.clear();
                         self.update_command_menu();
                     }
                     return Ok(true);
@@ -510,8 +480,7 @@ impl App {
                                 self.command_menu_selected.saturating_sub(1);
                         }
                     } else {
-                        self.scroll = self.scroll.saturating_sub(1);
-                        self.auto_scroll = false;
+                        self.scroll_manager.scroll_up(1);
                     }
                 }
                 KeyCode::Down => {
@@ -521,107 +490,68 @@ impl App {
                             self.command_menu_selected += 1;
                         }
                     } else {
-                        self.scroll = self.scroll.saturating_add(1);
-                        self.auto_scroll = false;
+                        self.scroll_manager.scroll_down(1);
                     }
                 }
                 KeyCode::PageUp => {
-                    self.scroll = self.scroll.saturating_sub(10);
-                    self.auto_scroll = false;
+                    self.scroll_manager.scroll_page_up();
                 }
                 KeyCode::PageDown => {
-                    self.scroll = self.scroll.saturating_add(10);
-                    self.auto_scroll = false;
+                    self.scroll_manager.scroll_page_down();
                 }
                 KeyCode::Home => {
-                    self.scroll = 0;
-                    self.auto_scroll = false;
+                    self.scroll_manager.scroll_to_top();
                 }
-                KeyCode::End => self.auto_scroll = true,
+                KeyCode::End => {
+                    self.scroll_manager.scroll_to_bottom();
+                }
                 KeyCode::Char(c) => {
+                    self.terminal_cursor.on_activity();
                     let is_word_boundary = c.is_whitespace() || c.is_ascii_punctuation();
-                    self.save_to_undo(is_word_boundary);
-                    if let Some((start, end)) = self.get_selection_range() {
-                        self.input.replace_range(start..end, &c.to_string());
-                        self.cursor_position = start + 1;
-                        self.clear_selection();
-                    } else {
-                        self.input.insert(self.cursor_position, c);
-                        self.cursor_position += 1;
-                    }
+                    self.undo_manager.save(&self.input_state, is_word_boundary);
+                    self.input_state.insert_char(c);
                     self.update_command_menu();
                     self.show_help = false;
                     return Ok(true);
                 }
                 KeyCode::Backspace => {
-                    self.save_to_undo(true);
-                    if let Some((start, end)) = self.get_selection_range() {
-                        self.input.replace_range(start..end, "");
-                        self.cursor_position = start;
-                        self.clear_selection();
-                    } else if self.cursor_position > 0 {
-                        self.cursor_position -= 1;
-                        self.input.remove(self.cursor_position);
-                    }
+                    self.terminal_cursor.on_activity();
+                    self.undo_manager.save(&self.input_state, true);
+                    self.input_state.delete_char_before();
                     self.update_command_menu();
                     return Ok(true);
                 }
                 KeyCode::Delete => {
-                    self.save_to_undo(true);
-                    if let Some((start, end)) = self.get_selection_range() {
-                        self.input.replace_range(start..end, "");
-                        self.cursor_position = start;
-                        self.clear_selection();
-                    } else if self.cursor_position < self.input.len() {
-                        self.input.remove(self.cursor_position);
-                    }
+                    self.terminal_cursor.on_activity();
+                    self.undo_manager.save(&self.input_state, true);
+                    self.input_state.delete_char_after();
                     self.update_command_menu();
                 }
                 KeyCode::Left => {
-                    if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) {
-                        if self.selection_start.is_none() {
-                            self.selection_start = Some(self.cursor_position);
-                        }
-                        if self.cursor_position > 0 {
-                            self.cursor_position -= 1;
-                        }
-                    } else if self.selection_start.is_some() {
-                        if let Some((start, _)) = self.get_selection_range() {
-                            self.cursor_position = start;
-                        }
-                        self.clear_selection();
-                    } else if self.cursor_position > 0 {
-                        self.cursor_position -= 1;
-                    }
+                    self.terminal_cursor.on_activity();
+                    let with_selection =
+                        key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT);
+                    self.input_state.move_cursor_left(with_selection);
                     self.update_command_menu();
                 }
                 KeyCode::Right => {
-                    if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) {
-                        if self.selection_start.is_none() {
-                            self.selection_start = Some(self.cursor_position);
-                        }
-                        if self.cursor_position < self.input.len() {
-                            self.cursor_position += 1;
-                        }
-                    } else if self.selection_start.is_some() {
-                        if let Some((_, end)) = self.get_selection_range() {
-                            self.cursor_position = end;
-                        }
-                        self.clear_selection();
-                    } else if self.cursor_position < self.input.len() {
-                        self.cursor_position += 1;
-                    }
+                    self.terminal_cursor.on_activity();
+                    let with_selection =
+                        key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT);
+                    self.input_state.move_cursor_right(with_selection);
                     self.update_command_menu();
                 }
                 KeyCode::Tab => {
                     if self.show_command_menu {
                         let filtered = self.get_filtered_commands();
                         if !filtered.is_empty() {
-                            self.save_to_undo(true);
+                            self.undo_manager.save(&self.input_state, true);
                             let selected_idx = self.command_menu_selected % filtered.len();
                             let selected_command = filtered[selected_idx].0;
 
-                            let input_before_cursor = &self.input[..self.cursor_position];
+                            let cursor_position = self.input_state.cursor_position();
+                            let input = self.input_state.text();
+                            let input_before_cursor = &input[..cursor_position];
                             let cmd_start = if let Some(pos) =
                                 input_before_cursor.rfind(|c: char| c.is_whitespace())
                             {
@@ -630,9 +560,11 @@ impl App {
                                 0
                             };
 
-                            self.input
-                                .replace_range(cmd_start..self.cursor_position, selected_command);
-                            self.cursor_position = cmd_start + selected_command.len();
+                            self.input_state.replace_range(
+                                cmd_start,
+                                cursor_position,
+                                selected_command,
+                            );
                             self.show_command_menu = false;
                             self.command_menu_selected = 0;
                         }
@@ -691,11 +623,26 @@ impl App {
             match key.code {
                 KeyCode::Enter => editor.save_current_field(),
                 KeyCode::Esc => editor.cancel_editing(),
-                KeyCode::Char(c) => editor.insert_char(c),
-                KeyCode::Backspace => editor.delete_char(),
-                KeyCode::Delete => editor.delete_char_forward(),
-                KeyCode::Left => editor.move_cursor_left(),
-                KeyCode::Right => editor.move_cursor_right(),
+                KeyCode::Char(c) => {
+                    self.terminal_cursor.on_activity();
+                    editor.insert_char(c);
+                }
+                KeyCode::Backspace => {
+                    self.terminal_cursor.on_activity();
+                    editor.delete_char();
+                }
+                KeyCode::Delete => {
+                    self.terminal_cursor.on_activity();
+                    editor.delete_char_forward();
+                }
+                KeyCode::Left => {
+                    self.terminal_cursor.on_activity();
+                    editor.move_cursor_left();
+                }
+                KeyCode::Right => {
+                    self.terminal_cursor.on_activity();
+                    editor.move_cursor_right();
+                }
                 KeyCode::Up if editor.show_enum_menu => editor.enum_menu_up(),
                 KeyCode::Down if editor.show_enum_menu => editor.enum_menu_down(),
                 _ => return Ok(false),
@@ -703,15 +650,17 @@ impl App {
         } else {
             match key.code {
                 KeyCode::Esc => self.close_config_editor(),
-                KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => editor.scroll_up(),
+                KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => editor.prev_field(),
                 KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    editor.scroll_down()
+                    editor.next_field()
                 }
-                KeyCode::Up => editor.prev_field(),
-                KeyCode::Down => editor.next_field(),
+                KeyCode::Up => editor.scroll_up(),
+                KeyCode::Down => editor.scroll_down(),
                 KeyCode::PageUp => editor.scroll_page_up(),
                 KeyCode::PageDown => editor.scroll_page_down(),
                 KeyCode::Home => editor.scroll_to_top(),
+                KeyCode::Tab => editor.next_field(),
+                KeyCode::BackTab => editor.prev_field(),
                 KeyCode::Enter => editor.start_editing(),
                 KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.save_config_from_editor()?

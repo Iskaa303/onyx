@@ -28,6 +28,7 @@ pub enum FieldType {
     String,
     OptionalString,
     Enum,
+    U64,
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +36,7 @@ pub enum FieldValue {
     String(String),
     OptionalString(Option<String>),
     Enum(String),
+    U64(u64),
 }
 
 impl FieldValue {
@@ -43,6 +45,7 @@ impl FieldValue {
             FieldValue::String(_) => FieldType::String,
             FieldValue::OptionalString(_) => FieldType::OptionalString,
             FieldValue::Enum(_) => FieldType::Enum,
+            FieldValue::U64(_) => FieldType::U64,
         }
     }
 
@@ -52,6 +55,7 @@ impl FieldValue {
             FieldValue::OptionalString(Some(s)) => s.clone(),
             FieldValue::OptionalString(None) => String::new(),
             FieldValue::Enum(s) => s.clone(),
+            FieldValue::U64(n) => n.to_string(),
         }
     }
 
@@ -67,6 +71,7 @@ impl FieldValue {
                 }
             }
             FieldType::Enum => FieldValue::Enum(trimmed),
+            FieldType::U64 => FieldValue::U64(trimmed.parse().unwrap_or(0)),
         }
     }
 }
@@ -320,6 +325,9 @@ macro_rules! config_fields {
     (@get Enum, $c:expr, $label:expr, $hint:expr, $($path:tt).+, $enum_vals:expr) => {
         $crate::config::FieldValue::Enum($c.$($path).+.to_string())
     };
+    (@get U64, $c:expr, $label:expr, $hint:expr, $($path:tt).+ $(, $enum_vals:expr)?) => {
+        $crate::config::FieldValue::U64($c.$($path).+)
+    };
 
     (@set String, $c:expr, $v:expr, $label:expr, $hint:expr, $($path:tt).+ $(, $enum_vals:expr)?) => {
         if let $crate::config::FieldValue::String(val) = $v {
@@ -334,6 +342,11 @@ macro_rules! config_fields {
     (@set Enum, $c:expr, $v:expr, $label:expr, $hint:expr, $($path:tt).+, $enum_vals:expr) => {
         if let $crate::config::FieldValue::Enum(val) = $v {
             $c.$($path).+ = val.parse().unwrap_or_default();
+        }
+    };
+    (@set U64, $c:expr, $v:expr, $label:expr, $hint:expr, $($path:tt).+ $(, $enum_vals:expr)?) => {
+        if let $crate::config::FieldValue::U64(val) = $v {
+            $c.$($path).+ = val;
         }
     };
 }
