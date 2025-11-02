@@ -3,19 +3,14 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::SystemTime;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CursorStyle {
     Block,
+    #[default]
     BlockBlinking,
     Line,
     LineBlinking,
-}
-
-impl Default for CursorStyle {
-    fn default() -> Self {
-        Self::BlockBlinking
-    }
 }
 
 impl fmt::Display for CursorStyle {
